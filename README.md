@@ -1,5 +1,7 @@
 # pro-ledin-ocr
 
+[![skills.sh](https://skills.sh/b/ledin-pro/ocr)](https://skills.sh/ledin-pro/ocr)
+
 Layered OCR workhorse: extract text from scanned PDFs and images (PNG/JPG/TIFF/
 HEIC/WEBP) using a tiered engine stack. The baseline path (poppler + tesseract)
 needs zero extra Python installs; heavier engines are opt-in extras.

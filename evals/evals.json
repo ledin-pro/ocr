@@ -1,0 +1,145 @@
+{
+  "skill_name": "ocr",
+  "evals": [
+    {
+      "id": 1,
+      "name": "russian-press-release-text",
+      "prompt": "I have a PDF of a Russian financial press release — when I try to select text in my PDF viewer it doesn't work, nothing gets selected. Can you extract all the text from it for me?",
+      "files": ["evals/files/press_release.pdf"],
+      "expected_output": "Full RU/EN text of the press release including revenue figure 2 500, EBITDA 415, margin 16.6%, and Cyrillic word Выручка. Baseline (no skill) returns near-empty or fails silently.",
+      "assertions": [
+        {
+          "text": "Output contains Cyrillic word 'Выручка' (revenue)",
+          "check": "contains",
+          "value": "Выручка"
+        },
+        {
+          "text": "Output contains revenue figure 2 500 (or 2500)",
+          "check": "contains_any",
+          "value": ["2 500", "2500", "2,500"]
+        },
+        {
+          "text": "Output contains 'EBITDA'",
+          "check": "contains",
+          "value": "EBITDA"
+        },
+        {
+          "text": "Output contains EBITDA figure 415",
+          "check": "contains",
+          "value": "415"
+        },
+        {
+          "text": "Output has substantial content (> 600 characters)",
+          "check": "min_length",
+          "value": 600
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "name": "ebitda-table-markdown",
+      "prompt": "From this financial press release PDF (the text can't be selected), pull out the financial table and format it as a Markdown table with 2025 and 2024 columns.",
+      "files": ["evals/files/press_release.pdf"],
+      "expected_output": "A valid Markdown table with | header | row |, containing 2025 and 2024 columns, rows for Выручка/revenue and EBITDA at minimum.",
+      "assertions": [
+        {
+          "text": "Output contains Markdown table syntax (pipe characters)",
+          "check": "contains",
+          "value": "|"
+        },
+        {
+          "text": "Output contains '2025' column",
+          "check": "contains",
+          "value": "2025"
+        },
+        {
+          "text": "Output contains '2024' column",
+          "check": "contains",
+          "value": "2024"
+        },
+        {
+          "text": "Output contains EBITDA row",
+          "check": "contains",
+          "value": "EBITDA"
+        },
+        {
+          "text": "Output contains revenue row (Выручка or revenue)",
+          "check": "contains_any",
+          "value": ["Выручка", "выручка", "revenue", "Revenue"]
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "name": "receipt-extraction",
+      "prompt": "Read this receipt image and tell me what was ordered and the total amount paid.",
+      "files": ["evals/files/receipt_cord.jpg"],
+      "expected_output": "Receipt shows items including EGG TART (13,000) and CHOCO CUSTARD PASTRY (24,000), total 46,000, change 4,000.",
+      "assertions": [
+        {
+          "text": "Output contains an item name from the receipt",
+          "check": "contains_any",
+          "value": ["EGG TART", "TART", "PASTRY", "BREAD", "REDBEAN"]
+        },
+        {
+          "text": "Output contains total amount",
+          "check": "contains_any",
+          "value": ["46,000", "46000", "46.000"]
+        },
+        {
+          "text": "Output contains change amount or CHANGE keyword",
+          "check": "contains_any",
+          "value": ["4,000", "4000", "CHANGE", "Change"]
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "name": "image-input-ocr",
+      "prompt": "Can you read the text in this slide image for me?",
+      "files": ["evals/files/slide.png"],
+      "expected_output": "Text from the slide: 'Romashka Analytics' and 'Итоги 2025 г.' and key rate 21%.",
+      "assertions": [
+        {
+          "text": "Output contains 'Romashka'",
+          "check": "contains_any",
+          "value": ["Romashka", "ROMASHKA"]
+        },
+        {
+          "text": "Output contains '2025' (year from slide)",
+          "check": "contains",
+          "value": "2025"
+        },
+        {
+          "text": "Output contains Cyrillic text (Итоги or ставка)",
+          "check": "contains_any",
+          "value": ["Итоги", "итоги", "ставка", "Ключевая", "21%", "21 %"]
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "name": "skewed-noisy-scan",
+      "prompt": "I scanned a document but my scanner was a bit crooked and the image is a bit grainy. Can you OCR this for me and get the text out?",
+      "files": ["evals/files/skewed_scan.jpg"],
+      "expected_output": "OCR output of the degraded scan using enhanced/full preprocessing. Should recover key tokens despite skew and noise.",
+      "assertions": [
+        {
+          "text": "Output has meaningful content (> 250 characters)",
+          "check": "min_length",
+          "value": 250
+        },
+        {
+          "text": "Output contains at least one key token from the original page",
+          "check": "contains_any",
+          "value": ["EBITDA", "Выручка", "2 500", "2500", "415", "Romashka", "16.6"]
+        },
+        {
+          "text": "Skill used enhanced or full preprocessing (not none/basic for a noisy scan)",
+          "check": "agent_used_preprocessing",
+          "value": "enhanced_or_full"
+        }
+      ]
+    }
+  ]
+}

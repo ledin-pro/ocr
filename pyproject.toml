@@ -54,8 +54,8 @@ packages = ["src/pro"]
 include = [
     "src/pro",
     "tests",
-    "references",
-    "SKILL.md",
+    "skills/ocr/references",
+    "skills/ocr/SKILL.md",
     "README.md",
     "LICENSE",
 ]

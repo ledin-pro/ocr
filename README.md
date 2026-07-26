@@ -65,7 +65,8 @@ failures (unsupported input, missing binaries/packages, vision-api config).
 | 3 | vision (agent reads PNGs) | Tables, charts, complex layouts | Agent tokens |
 | 3.5 | vision-api (OpenAI-compatible) | Headless batch, complex layouts | API cost |
 
-Full docs: `SKILL.md`, `references/engines.md`, `references/troubleshooting.md`.
+Full docs: `skills/ocr/SKILL.md`, `skills/ocr/references/engines.md`,
+`skills/ocr/references/troubleshooting.md`.
 
 ## Development
 

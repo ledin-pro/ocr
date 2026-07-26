@@ -125,6 +125,7 @@ Examples:
   ocr photo.jpg --format md
   ocr doc.pdf --lang rus+eng --preprocess full --format all
   ocr slides.pdf --engine vision --pages 9,12
+  ocr table.png --engine vision --vision-prompt-file table-prompt.txt
   ocr *.pdf --cache cache.json --format txt
         """,
     )
@@ -165,6 +166,11 @@ Examples:
                    help="API key for --engine vision-api (required; env vars are not read)")
     p.add_argument("--vision-model", default="",
                    help="Model name for --engine vision-api (required; no default)")
+    prompt_group = p.add_mutually_exclusive_group()
+    prompt_group.add_argument("--vision-prompt", default="",
+                              help="Custom prompt for --engine vision or vision-api")
+    prompt_group.add_argument("--vision-prompt-file", type=Path,
+                              help="UTF-8 file containing a custom vision prompt")
     p.add_argument("--searchable-pdf", default="",
                    help="Path for searchable PDF output (requires ocrmypdf)")
     p.add_argument("--json-report", default="",
@@ -174,12 +180,25 @@ Examples:
     return p
 
 
+def _vision_prompt_from_args(args: argparse.Namespace, parser: argparse.ArgumentParser) -> str:
+    if ((args.vision_prompt or args.vision_prompt_file is not None)
+            and args.engine not in ("vision", "vision-api")):
+        parser.error("--vision-prompt and --vision-prompt-file require --engine vision or vision-api")
+    if args.vision_prompt_file is None:
+        return args.vision_prompt
+    try:
+        return args.vision_prompt_file.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        parser.error(f"cannot read vision prompt file {args.vision_prompt_file}: {exc}")
+
+
 # ── entry point ───────────────────────────────────────────────────────────────
 
 def run(argv: list[str] | None = None) -> None:
     global caps_global
     parser = build_parser()
     args = parser.parse_args(argv)
+    vision_prompt = _vision_prompt_from_args(args, parser)
 
     options = RecognizeOptions(
         engine=args.engine,
@@ -195,6 +214,7 @@ def run(argv: list[str] | None = None) -> None:
         vision_api_url=args.vision_api_url,
         vision_api_key=args.vision_api_key,
         vision_model=args.vision_model,
+        vision_prompt=vision_prompt,
         verbose=args.verbose,
     )
 

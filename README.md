@@ -35,9 +35,12 @@ ocr scan.png --format md
 ocr russian_doc.pdf --lang rus+eng --format md
 ocr scan.pdf --preprocess full                # deskew + denoise
 ocr slides.pdf --engine vision --pages 9,12   # hand pages to a multimodal agent
+ocr table.png --engine vision \
+  --vision-prompt "Extract only table rows and preserve empty cells"
 ocr slides.pdf --engine vision-api \
   --vision-api-url https://api.example.com/v1 \
-  --vision-api-key "$KEY" --vision-model my-vision-model
+  --vision-api-key "$KEY" --vision-model my-vision-model \
+  --vision-prompt-file prompts/faithful-ocr.txt
 ```
 
 See `ocr --help` for the full flag reference.
@@ -47,7 +50,15 @@ See `ocr --help` for the full flag reference.
 ```python
 from pro.ledin import ocr
 
-pages = ocr.recognize("scan.pdf", ocr.RecognizeOptions(engine="tesseract", lang="rus+eng"))
+pages = ocr.recognize(
+    "scan.pdf",
+    ocr.RecognizeOptions(
+        engine="vision-api",
+        vision_api_key="key",
+        vision_model="model",
+        vision_prompt="Preserve checkbox states and labels.",
+    ),
+)
 markdown = ocr.to_markdown(pages, "scan.pdf")
 ```
 

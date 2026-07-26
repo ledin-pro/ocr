@@ -53,7 +53,7 @@ class OcrError(Exception):
         self.code = code
 
 # ── version ───────────────────────────────────────────────────────────────────
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 
 def probe_script_path() -> str:
@@ -64,6 +64,11 @@ def probe_script_path() -> str:
 # ── constants ─────────────────────────────────────────────────────────────────
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".tiff", ".tif", ".heic", ".webp", ".bmp", ".gif"}
 PDF_EXTENSION = ".pdf"
+DEFAULT_VISION_PROMPT = (
+    "Read this page image faithfully. Reproduce all visible text in reading order. "
+    "For tables use Markdown table syntax. For charts describe axis labels and key "
+    "data values. No commentary."
+)
 
 # OSD script → tesseract language code
 SCRIPT_TO_LANG: dict[str, str] = {
@@ -220,9 +225,36 @@ def _parse_page_range(spec: str, total: int) -> list[int]:
     return [p for p in pages if 1 <= p <= total]
 
 
-def _sha1_key(path: str, engine: str, dpi: str, preprocess: str, lang: str) -> str:
+def _resolve_page_range(spec: str, total: int, max_pages: int) -> list[int] | None:
+    if max_pages < 0:
+        _fatal("max_pages must be zero or greater", EXIT_BAD_ARGS)
+    pages = _parse_page_range(spec, total) if spec else None
+    if max_pages:
+        if pages is not None:
+            pages = pages[:max_pages]
+        else:
+            pages = list(range(1, min(total, max_pages) + 1))
+    if pages == []:
+        _fatal("page selection matched no pages", EXIT_BAD_ARGS)
+    return pages
+
+
+def _sha1_key(
+    path: str,
+    engine: str,
+    dpi: str,
+    preprocess: str,
+    lang: str,
+    page_selection: str,
+    vision_context: str = "",
+) -> str:
     stat = os.stat(path)
-    raw = f"{os.path.abspath(path)}|{stat.st_mtime}|{stat.st_size}|{engine}|{dpi}|{preprocess}|{lang}"
+    raw = (
+        f"{os.path.abspath(path)}|{stat.st_mtime}|{stat.st_size}|{engine}|{dpi}|"
+        f"{preprocess}|{lang}|pages={page_selection}"
+    )
+    if vision_context:
+        raw += f"|vision={vision_context}"
     return hashlib.sha1(raw.encode()).hexdigest()
 
 
@@ -816,23 +848,30 @@ def ocr_paddleocr(img_path: str, lang: str, caps: Caps,
     return text, mean_conf, words
 
 
-def vision_handoff(img_paths: list[tuple[int, str]], verbose: bool = False) -> str:
+def resolve_vision_prompt(vision_prompt: str = "") -> str:
+    """Return a custom vision prompt or the built-in faithful extraction prompt."""
+    return vision_prompt if vision_prompt.strip() else DEFAULT_VISION_PROMPT
+
+
+def vision_handoff(
+    img_paths: list[tuple[int, str]],
+    verbose: bool = False,
+    *,
+    vision_prompt: str = "",
+) -> str:
     """
     Print a manifest of rendered PNG paths for agent-driven vision OCR.
     Returns a manifest string; the agent should read each PNG.
     """
+    prompt = resolve_vision_prompt(vision_prompt)
     lines = [
         "== Vision OCR: agent read required ==",
         "",
         "The following pages were rendered as PNG for vision-based OCR.",
-        "Read each image and reproduce all text. For tables use Markdown",
-        "table syntax (| col | col |). For charts describe key values.",
+        "Read each image using the prompt below.",
         "",
         "Prompt to use:",
-        '  "Read this page image faithfully. Reproduce all visible text in',
-        '   reading order. For tables use | Markdown | table | syntax |.',
-        '   For charts describe axis labels and key data values.',
-        '   No commentary — only the content visible in the image."',
+        prompt,
         "",
         "Pages to read:",
     ]
@@ -922,6 +961,7 @@ def vision_api(
     vision_api_url: str = "",
     vision_api_key: str = "",
     vision_model: str = "",
+    vision_prompt: str = "",
     timeout: float | None = None,
     verbose: bool = False,
 ) -> str:
@@ -933,6 +973,7 @@ def vision_api(
     running. `None` keeps the SDK's own default.
     """
     key, model, endpoint = resolve_vision_config(vision_api_key, vision_model, vision_api_url)
+    prompt = resolve_vision_prompt(vision_prompt)
     try:
         from openai import OpenAI
     except ImportError:
@@ -951,10 +992,7 @@ def vision_api(
         content = [
             {"type": "image_url",
              "image_url": {"url": f"data:{media_type};base64,{b64}", "detail": "high"}},
-            {"type": "text",
-             "text": ("Read this page image faithfully. Reproduce all visible text in "
-                      "reading order. For tables use Markdown table syntax. For charts "
-                      "describe axis labels and key data values. No commentary.")},
+            {"type": "text", "text": prompt},
         ]
         resp = client.chat.completions.create(
             model=model,
@@ -1124,6 +1162,7 @@ class RecognizeOptions:
     # local OCR call — only a real network request can be cancelled cleanly.
     timeout: float | None = None
     verbose: bool = False
+    vision_prompt: str = ""
 
 
 def process_file(
@@ -1159,8 +1198,34 @@ def process_file(
     # Preprocess level
     pp_level = resolve_preprocess(options.preprocess, probe, caps, input_type)
 
+    page_range = None
+    if input_type == "pdf":
+        page_range = _resolve_page_range(
+            options.pages, probe["pages"] if probe else 0, options.max_pages
+        )
+
     # Cache key
-    cache_key = _sha1_key(path, options.engine, str(dpi), pp_level, options.lang)
+    page_selection = (
+        ",".join(str(page) for page in page_range)
+        if page_range is not None
+        else "all"
+    )
+    vision_context = ""
+    if options.engine == "vision-api":
+        vision_context = json.dumps({
+            "model": options.vision_model.strip(),
+            "prompt": resolve_vision_prompt(options.vision_prompt),
+            "url": options.vision_api_url.strip(),
+        }, ensure_ascii=False, sort_keys=True)
+    cache_key = _sha1_key(
+        path,
+        options.engine,
+        str(dpi),
+        pp_level,
+        options.lang,
+        page_selection,
+        vision_context,
+    )
     if not options.force and cache.get(cache_key):
         _log(f"cache hit for {path}", verbose)
         cached = cache.get(cache_key)
@@ -1174,7 +1239,6 @@ def process_file(
             and not probe["needs_ocr"]
             and not options.force
             and options.engine == "auto"):
-        page_range = _parse_page_range(options.pages, probe["pages"]) if options.pages else None
         texts = extract_text_layer(path, page_range, caps)
         for i, text in enumerate(texts):
             pnum = (page_range[i] if page_range else i + 1)
@@ -1193,12 +1257,11 @@ def process_file(
     # Vision-handoff path
     if options.engine == "vision":
         caps.require_render()
-        page_range = _parse_page_range(options.pages, probe["pages"] if probe else 1) if options.pages else None
         if input_type == "pdf":
             rendered = render_pages(path, dpi, page_range, tmpdir, caps, verbose)
         else:
             rendered = [(1, path)]
-        vision_handoff(rendered, verbose)
+        vision_handoff(rendered, verbose, vision_prompt=options.vision_prompt)
         # Return placeholder pages — agent fills the text
         for pnum, png in rendered:
             pages_data.append({
@@ -1215,7 +1278,6 @@ def process_file(
     # Vision API path
     if options.engine == "vision-api":
         caps.require_render()
-        page_range = _parse_page_range(options.pages, probe["pages"] if probe else 1) if options.pages else None
         if input_type == "pdf":
             rendered = render_pages(path, dpi, page_range, tmpdir, caps, verbose)
         else:
@@ -1225,6 +1287,7 @@ def process_file(
             vision_api_url=options.vision_api_url,
             vision_api_key=options.vision_api_key,
             vision_model=options.vision_model,
+            vision_prompt=options.vision_prompt,
             timeout=options.timeout,
             verbose=verbose,
         )
@@ -1236,7 +1299,6 @@ def process_file(
     # EasyOCR path
     if options.engine == "easyocr":
         if input_type == "pdf":
-            page_range = _parse_page_range(options.pages, probe["pages"]) if options.pages else None
             rendered = render_pages(path, dpi, page_range, tmpdir, caps, verbose)
         else:
             rendered = [(1, path)]
@@ -1255,7 +1317,6 @@ def process_file(
     # PaddleOCR path (opt-in)
     if options.engine == "paddleocr":
         if input_type == "pdf":
-            page_range = _parse_page_range(options.pages, probe["pages"]) if options.pages else None
             rendered = render_pages(path, dpi, page_range, tmpdir, caps, verbose)
         else:
             rendered = [(1, path)]
@@ -1283,12 +1344,6 @@ def process_file(
 
     # Default: tesseract (auto or explicit)
     if input_type == "pdf":
-        page_range = _parse_page_range(options.pages, probe["pages"]) if options.pages else None
-        if options.max_pages:
-            if page_range:
-                page_range = page_range[:options.max_pages]
-            else:
-                page_range = list(range(1, min(probe["pages"], options.max_pages) + 1))
         rendered = render_pages(path, dpi, page_range, tmpdir, caps, verbose)
     else:
         rendered = [(1, path)]

@@ -105,7 +105,8 @@ ocr russian_doc.pdf --lang rus+eng --format md
 ocr scan.pdf --preprocess full --format all
 
 # Table-heavy slide / complex layout → vision tier
-ocr slides.pdf --engine vision
+ocr slides.pdf --engine vision \
+  --vision-prompt "Extract tables and preserve empty cells"
 
 # CJK / multilingual doc → PaddleOCR (opt-in)
 ocr doc.png --engine paddleocr
@@ -113,7 +114,8 @@ ocr doc.png --engine paddleocr
 # Headless vision via an OpenAI-compatible endpoint (all config via flags)
 ocr slides.pdf --engine vision-api \
   --vision-api-url https://api.example.com/v1 \
-  --vision-api-key "$MY_KEY" --vision-model my-vision-model
+  --vision-api-key "$MY_KEY" --vision-model my-vision-model \
+  --vision-prompt-file prompts/faithful-ocr.txt
 ```
 
 For `vision-api`, page images over ~7.5 MB are auto-re-encoded to JPEG (full
@@ -164,6 +166,8 @@ ocr INPUT [INPUT ...]
   --vision-api-url  URL   (OpenAI-compatible base URL for vision-api)
   --vision-api-key  KEY   (required for vision-api; env vars are NOT read)
   --vision-model    NAME  (required for vision-api; no default)
+  --vision-prompt   TEXT  (custom prompt for vision or vision-api)
+  --vision-prompt-file PATH  (UTF-8 prompt file; mutually exclusive with above)
   --searchable-pdf OUT.pdf
   --json-report PATH
   --verbose
@@ -187,7 +191,7 @@ markdown = ocr.to_markdown(pages, "scan.pdf")
   `to_markdown()`, `to_text()`, or `to_json()`.
 - `RecognizeOptions` mirrors the CLI's recognition flags (`engine`, `lang`,
   `dpi`, `preprocess`, `pages`, `max_pages`, `psm`, `min_conf`, `no_cleanup`,
-  `force`, `vision_api_url`, `vision_api_key`, `vision_model`, `timeout`,
+  `force`, `vision_api_url`, `vision_api_key`, `vision_model`, `vision_prompt`, `timeout`,
   `verbose`). Output-only flags (`--out`, `--format`, `--json-report`,
   `--searchable-pdf`) are CLI-only and have no library equivalent.
 - `--engine vision` is an interactive agent handoff (renders pages and prints

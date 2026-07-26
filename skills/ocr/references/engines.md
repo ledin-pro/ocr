@@ -204,14 +204,30 @@ conversation. If the current agent is GPT, GPT reads the PNGs. If the current
 agent is Claude, Claude reads them. If the current agent cannot read images,
 use `--engine vision-api` or another OCR backend instead.
 
-### Recommended prompt for the agent
+### Default prompt
 
 ```
-Read the attached page image faithfully. Reproduce all visible text in the same
-order as it appears. For tables, use Markdown table syntax (| col | col |).
-For charts, describe the key values (axis labels, bar heights, trend lines).
-Do not add commentary or interpretation — only the content visible in the image.
+Read this page image faithfully. Reproduce all visible text in reading order.
+For tables use Markdown table syntax. For charts describe axis labels and key
+data values. No commentary.
 ```
+
+Both `vision` and `vision-api` accept a custom prompt. Use
+`--vision-prompt TEXT` for short instructions or `--vision-prompt-file PATH`
+for a multiline UTF-8 file; the options are mutually exclusive. Empty or
+whitespace-only prompts fall back to the default above.
+
+```bash
+ocr table.png --engine vision \
+  --vision-prompt "Extract only table rows and preserve empty cells"
+
+ocr form.png --engine vision-api \
+  --vision-api-key "$KEY" --vision-model model \
+  --vision-prompt-file prompts/form-ocr.txt
+```
+
+The effective `vision-api` prompt is part of its cache key. Changing the prompt
+therefore triggers a fresh API extraction instead of reusing incompatible text.
 
 ### Vision API path (headless / batch use)
 

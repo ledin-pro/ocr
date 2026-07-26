@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "pro-ledin-ocr"
-version = "0.1.0"
+version = "0.2.0"
 description = "Layered OCR workhorse: extract text from scanned PDFs and images (tesseract, PyMuPDF, easyocr, paddleocr, vision-api)."
 readme = "README.md"
 requires-python = ">=3.10"

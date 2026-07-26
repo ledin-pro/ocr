@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "pro-ledin-ocr"
-version = "0.2.0"
+version = "0.3.0"
 description = "Layered OCR workhorse: extract text from scanned PDFs and images (tesseract, PyMuPDF, easyocr, paddleocr, vision-api)."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -39,6 +39,7 @@ dev = ["pytest>=8.0", "pillow"]
 [project.scripts]
 ocr = "pro.ledin.ocr.cli:main"
 ocr-probe = "pro.ledin.ocr.cli:probe_main"
+peepshow-sink-ocr = "pro.ledin.ocr.peepshow_sink:main"
 
 [project.urls]
 Homepage = "https://github.com/ledin-pro/ocr"

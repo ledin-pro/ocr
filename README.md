@@ -7,7 +7,7 @@ HEIC/WEBP) using a tiered engine stack. The baseline path (poppler + tesseract)
 needs zero extra Python installs; heavier engines are opt-in extras.
 
 - Import name: `pro.ledin.ocr`
-- Console scripts: `ocr`, `ocr-probe`
+- Console scripts: `ocr`, `ocr-probe`, `peepshow-sink-ocr`
 - PyPI: `pro-ledin-ocr`
 
 ## Install
@@ -45,6 +45,37 @@ ocr slides.pdf --engine vision-api \
 
 See `ocr --help` for the full flag reference.
 
+## Peepshow sink
+
+`peepshow-sink-ocr` reads peepshow's JSON payload from stdin, recognizes each
+primary frame, and atomically writes `<outputDir>/ocr.json`:
+
+```bash
+peepshow video.mp4 --sink ocr
+peepshow video.mp4 \
+  --sink-cmd 'peepshow-sink-ocr --engine tesseract --lang rus+eng'
+```
+
+No extra Python dependency is required for the sink interface. Peepshow only
+needs the installed `peepshow-sink-ocr` executable on `PATH`. The default local
+engine still requires Tesseract; `vision-api` requires
+`pip install "pro-ledin-ocr[vision]"`.
+
+Configure named sink runs through `PEEPSHOW_SINK_OCR_*` variables:
+
+```bash
+export PEEPSHOW_SINK_OCR_ENGINE=vision-api
+export PEEPSHOW_SINK_OCR_VISION_API_URL=https://api.example.com/v1
+export PEEPSHOW_SINK_OCR_VISION_API_KEY="$KEY"
+export PEEPSHOW_SINK_OCR_VISION_MODEL=my-vision-model
+export PEEPSHOW_SINK_OCR_TIMEOUT=120
+peepshow video.mp4 --sink ocr
+```
+
+The sink never changes peepshow's manifest or frames and prints no OCR content
+to stdout. `vision-api` sends frame images to the configured external endpoint.
+Protect both API credentials and output directories containing recognized text.
+
 ## Library
 
 ```python
@@ -77,6 +108,7 @@ failures (unsupported input, missing binaries/packages, vision-api config).
 | 3.5 | vision-api (OpenAI-compatible) | Headless batch, complex layouts | API cost |
 
 Full docs: `skills/ocr/SKILL.md`, `skills/ocr/references/engines.md`,
+`skills/ocr/references/peepshow-sinks.md`, and
 `skills/ocr/references/troubleshooting.md`.
 
 ## Development

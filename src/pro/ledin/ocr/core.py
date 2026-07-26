@@ -53,7 +53,7 @@ class OcrError(Exception):
         self.code = code
 
 # ── version ───────────────────────────────────────────────────────────────────
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 
 def probe_script_path() -> str:
@@ -727,7 +727,12 @@ def _ocr_tesseract_cli(img_path: str, lang: str, psm: int,
          "--oem", "3", "--psm", str(psm)],
         capture_output=True, text=True,
     )
-    full_text = txt_result.stdout if txt_result.returncode == 0 else ""
+    if txt_result.returncode != 0:
+        _fatal(
+            f"tesseract text extraction failed (exit {txt_result.returncode})",
+            EXIT_BAD_ARGS,
+        )
+    full_text = txt_result.stdout
     mean_conf = sum(confidences) / len(confidences) if confidences else 0.0
     _log(f"tesseract CLI: {len(words)} words, mean_conf={mean_conf:.1f}", verbose)
     return full_text, mean_conf, words

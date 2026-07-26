@@ -158,6 +158,21 @@ class FatalRaisesOcrError(unittest.TestCase):
         self.assertEqual(ctx.exception.code, ocr.EXIT_BAD_ARGS)
 
 
+class TesseractCliFailures(unittest.TestCase):
+    def test_text_command_failure_raises_sanitized_error(self):
+        failed = types.SimpleNamespace(
+            returncode=1,
+            stdout="",
+            stderr="sensitive tesseract diagnostics",
+        )
+        caps = types.SimpleNamespace(bin_tesseract="tesseract")
+        with mock.patch.object(ocr.subprocess, "run", return_value=failed):
+            with self.assertRaises(ocr.OcrError) as context:
+                ocr._ocr_tesseract_cli("frame.png", "missing-lang", 3, caps, False)
+        self.assertNotIn("sensitive", str(context.exception))
+        self.assertIn("exit 1", str(context.exception))
+
+
 class RecognizeOptionsDefaults(unittest.TestCase):
     """Guard against silent drift between library defaults and prior CLI defaults."""
 

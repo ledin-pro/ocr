@@ -248,6 +248,20 @@ uv run --with openai python3 scripts/ocr.py FILE --engine vision-api \
   --vision-api-key "$GATEWAY_KEY" --vision-model qwen2-vl
 ```
 
+### Peepshow sink engines
+
+`peepshow-sink-ocr` applies the same non-interactive engines to each primary
+frame in a peepshow payload. `auto`/`tesseract` need the existing Tesseract
+binary but no additional Python dependency. EasyOCR and PaddleOCR use their
+existing optional extras. `vision-api` requires `pro-ledin-ocr[vision]` and
+explicit endpoint credentials through flags or `PEEPSHOW_SINK_OCR_*`
+environment variables. Set `--timeout` or `PEEPSHOW_SINK_OCR_TIMEOUT` to bound
+each vision API request.
+
+Interactive `vision` is intentionally rejected because sink processes cannot
+hand rendered pages back to a conversational agent. Use `vision-api` instead.
+See `peepshow-sinks.md` for complete configuration and output schema.
+
 ---
 
 ## Making PDFs searchable (ocrmypdf)

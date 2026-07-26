@@ -28,8 +28,8 @@ pip install "pro-ledin-ocr[all]"     # + pymupdf, opencv, easyocr, paddleocr
 ```
 
 System binaries still required for the local path: `poppler` (pdftoppm,
-pdftotext, pdfinfo) and `tesseract`. Installs the `ocr` and `ocr-probe`
-console scripts.
+pdftotext, pdfinfo) and `tesseract`. Installs the `ocr`, `ocr-probe`, and
+`peepshow-sink-ocr` console scripts.
 
 ## When to use this skill
 
@@ -122,6 +122,28 @@ For `vision-api`, page images over ~7.5 MB are auto-re-encoded to JPEG (full
 resolution first, dimensions reduced only if still too large) to stay under
 the API's 10 MB per-image cap; this re-encode path requires Pillow. Images
 already under the limit are sent untouched with their detected media type.
+
+## Peepshow sink
+
+Use the installed sink to recognize frames already extracted by peepshow:
+
+```bash
+peepshow video.mp4 --sink ocr
+peepshow video.mp4 \
+  --sink-cmd 'peepshow-sink-ocr --engine tesseract --lang rus+eng'
+```
+
+The sink reads peepshow JSON from stdin and writes only
+`<outputDir>/ocr.json`. It does not modify frame files or peepshow's manifest.
+No additional Python package is required for the interface itself. Local
+recognition still requires Tesseract; `vision-api` requires the existing
+`pro-ledin-ocr[vision]` extra.
+
+For named `--sink ocr` use, configure `PEEPSHOW_SINK_OCR_*` environment
+variables. `engine=vision` is unavailable because a sink cannot perform an
+interactive agent handoff; use `vision-api` or a local engine. See
+`references/peepshow-sinks.md` for flags, environment variables, JSON schema,
+and privacy rules.
 
 ## Engine tiers (summary)
 

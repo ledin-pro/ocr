@@ -57,9 +57,9 @@ Work through this in order. Stop at the first successful step.
    └─ needs_ocr = true   → continue to step 3.
 
 3. Baseline OCR:
-   ocr FILE --format all
+   ocr FILE --format all --out .
    (auto-detects language via OSD, DPI from page size, preprocessing level)
-   Emits: FILE.md  FILE.txt  FILE_ocr.json
+   Emits: <stem>.md  <stem>.txt  <stem>.json
    quality report on stderr: per-page confidence, flagged pages.
 
 4. Review quality report. Escalate flagged pages only:
@@ -166,8 +166,15 @@ maps, DPI guidance, preprocessing levels, and install commands.
 | `--format md` | `# filename` + `## Page N` headers, prose text |
 | `--format txt` | pages separated by `----- Page N -----` |
 | `--format json` | per-page text + word confidence + bboxes + quality report |
-| `--format all` | all three formats written to disk |
+| `--format md,json` | comma-separated formats in requested order |
+| `--format all` | shorthand for `md,txt,json` |
 | `--searchable-pdf OUT` | invisible text layer overlaid on original PDF |
+
+Without `--out`, selected formats print to stdout. With one format, `--out`
+is an exact file path. With multiple formats or multiple inputs, `--out` is a
+directory containing `<input-stem>.<format>` files. Inputs sharing a stem are
+rejected to prevent overwrites. JSON output for multiple inputs requires
+`--out`; `--searchable-pdf` accepts one input only.
 
 ## All CLI flags
 
@@ -175,8 +182,8 @@ maps, DPI guidance, preprocessing levels, and install commands.
 ocr INPUT [INPUT ...]
   --engine   auto|tesseract|easyocr|paddleocr|vision|vision-api   default: auto
   --lang     auto|<tesseract codes>           default: auto (OSD detection)
-  --format   md|txt|json|all                 default: md
-  --out      PATH                            default: stdout (md/txt) or ./
+  --format   FORMAT[,FORMAT...]  md|txt|json|all   default: md
+  --out      PATH                            default: stdout
   --dpi      N|auto                          default: auto (300 A4, 150 wide)
   --preprocess  none|basic|enhanced|full|auto  default: auto
   --pages    RANGE  (e.g. 1-3,5)
@@ -191,7 +198,6 @@ ocr INPUT [INPUT ...]
   --vision-prompt   TEXT  (custom prompt for vision or vision-api)
   --vision-prompt-file PATH  (UTF-8 prompt file; mutually exclusive with above)
   --searchable-pdf OUT.pdf
-  --json-report PATH
   --verbose
 ```
 
@@ -214,7 +220,7 @@ markdown = ocr.to_markdown(pages, "scan.pdf")
 - `RecognizeOptions` mirrors the CLI's recognition flags (`engine`, `lang`,
   `dpi`, `preprocess`, `pages`, `max_pages`, `psm`, `min_conf`, `no_cleanup`,
   `force`, `vision_api_url`, `vision_api_key`, `vision_model`, `vision_prompt`, `timeout`,
-  `verbose`). Output-only flags (`--out`, `--format`, `--json-report`,
+  `verbose`). Output-only flags (`--out`, `--format`,
   `--searchable-pdf`) are CLI-only and have no library equivalent.
 - `--engine vision` is an interactive agent handoff (renders pages and prints
   a manifest for a multimodal agent to read) and is not usable via

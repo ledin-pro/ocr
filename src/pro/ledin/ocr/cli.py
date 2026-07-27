@@ -12,6 +12,7 @@ import os
 import sys
 import tempfile
 import time
+import unicodedata
 from pathlib import Path
 
 from .core import (
@@ -31,6 +32,25 @@ from .core import (
 # ── output writing ────────────────────────────────────────────────────────────
 
 caps_global: Caps  # set in main()
+OUTPUT_FORMATS = ("md", "txt", "json")
+
+
+def parse_formats(value: str) -> list[str]:
+    formats: list[str] = []
+    for raw_format in value.split(","):
+        fmt = raw_format.strip()
+        if not fmt:
+            raise argparse.ArgumentTypeError("format list contains an empty value")
+        expanded = OUTPUT_FORMATS if fmt == "all" else (fmt,)
+        for item in expanded:
+            if item not in OUTPUT_FORMATS:
+                choices = ", ".join((*OUTPUT_FORMATS, "all"))
+                raise argparse.ArgumentTypeError(
+                    f"unknown format '{item}'; choose from {choices}"
+                )
+            if item not in formats:
+                formats.append(item)
+    return formats
 
 
 def write_outputs(
@@ -50,9 +70,7 @@ def write_outputs(
         "min_conf": args.min_conf,
     }
 
-    formats = args.format.split(",") if "," in args.format else [args.format]
-    if "all" in formats:
-        formats = ["md", "txt", "json"]
+    formats = args.format
 
     for fmt in formats:
         if fmt == "md":
@@ -61,12 +79,10 @@ def write_outputs(
             content = to_text(pages_data)
         elif fmt == "json":
             content = to_json(pages_data, meta)
-        else:
-            continue
-
         if args.out:
             out_path = args.out
-            if os.path.isdir(out_path) or "all" in [args.format] or len(formats) > 1:
+            multiple_inputs = len(getattr(args, "inputs", [input_path])) > 1
+            if os.path.isdir(out_path) or len(formats) > 1 or multiple_inputs:
                 os.makedirs(out_path, exist_ok=True)
                 stem = Path(input_path).stem
                 out_file = os.path.join(out_path, f"{stem}.{fmt}")
@@ -79,13 +95,6 @@ def write_outputs(
             if len(formats) > 1:
                 print(f"\n{'='*60}\n[{fmt.upper()}]\n{'='*60}", flush=True)
             print(content, flush=True)
-
-    # Optional JSON report
-    if args.json_report:
-        report_content = to_json(pages_data, meta)
-        with open(args.json_report, "w", encoding="utf-8") as f:
-            f.write(report_content)
-        print(f"[ocr] quality report → {args.json_report}", file=sys.stderr)
 
     # Searchable PDF
     if args.searchable_pdf:
@@ -121,7 +130,7 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  ocr scan.pdf --format all
+  ocr scan.pdf --format md,json
   ocr photo.jpg --format md
   ocr doc.pdf --lang rus+eng --preprocess full --format all
   ocr slides.pdf --engine vision --pages 9,12
@@ -135,8 +144,13 @@ Examples:
                    help="OCR engine (default: auto)")
     p.add_argument("--lang", default="auto",
                    help="Tesseract language code(s), e.g. rus+eng (default: auto via OSD)")
-    p.add_argument("--format", default="md",
-                   help="Output format: md|txt|json|all (default: md)")
+    p.add_argument(
+        "--format",
+        type=parse_formats,
+        default=["md"],
+        metavar="FORMAT[,FORMAT...]",
+        help="Output formats: md,txt,json,all; comma-separated (default: md)",
+    )
     p.add_argument("--out", default="",
                    help="Output file or directory (default: stdout)")
     p.add_argument("--dpi", type=int, default=0,
@@ -173,8 +187,6 @@ Examples:
                               help="UTF-8 file containing a custom vision prompt")
     p.add_argument("--searchable-pdf", default="",
                    help="Path for searchable PDF output (requires ocrmypdf)")
-    p.add_argument("--json-report", default="",
-                   help="Path to write JSON quality report")
     p.add_argument("--verbose", "-v", action="store_true",
                    help="Verbose logging to stderr")
     return p
@@ -192,12 +204,45 @@ def _vision_prompt_from_args(args: argparse.Namespace, parser: argparse.Argument
         parser.error(f"cannot read vision prompt file {args.vision_prompt_file}: {exc}")
 
 
+def _validate_output_args(
+    args: argparse.Namespace,
+    parser: argparse.ArgumentParser,
+) -> None:
+    if len(args.inputs) < 2:
+        return
+
+    if args.searchable_pdf:
+        parser.error("--searchable-pdf supports only one input file")
+    if not args.out and "json" in args.format:
+        parser.error("JSON output with multiple inputs requires --out DIR")
+    if not args.out:
+        return
+
+    stems: dict[str, list[str]] = {}
+    for input_path in args.inputs:
+        stem = Path(input_path).stem
+        normalized_stem = unicodedata.normalize("NFC", stem).casefold()
+        stems.setdefault(normalized_stem, []).append(stem)
+    duplicates = sorted({
+        stem
+        for values in stems.values()
+        if len(values) > 1
+        for stem in values
+    })
+    if duplicates:
+        parser.error(
+            "--out with multiple inputs requires unique file stems; duplicate "
+            f"stem(s): {', '.join(duplicates)}. Rename inputs or use separate output directories."
+        )
+
+
 # ── entry point ───────────────────────────────────────────────────────────────
 
 def run(argv: list[str] | None = None) -> None:
     global caps_global
     parser = build_parser()
     args = parser.parse_args(argv)
+    _validate_output_args(args, parser)
     vision_prompt = _vision_prompt_from_args(args, parser)
 
     options = RecognizeOptions(

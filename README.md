@@ -30,7 +30,8 @@ sudo apt install poppler-utils tesseract-ocr-all   # Debian/Ubuntu
 
 ```bash
 ocr-probe myfile.pdf                          # triage: does it need OCR?
-ocr myfile.pdf --format all                   # md + txt + json
+ocr myfile.pdf --format md,json               # multiple formats to stdout
+ocr myfile.pdf --format md,txt,json --out results/  # one file per format
 ocr scan.png --format md
 ocr russian_doc.pdf --lang rus+eng --format md
 ocr scan.pdf --preprocess full                # deskew + denoise
@@ -44,6 +45,18 @@ ocr slides.pdf --engine vision-api \
 ```
 
 See `ocr --help` for the full flag reference.
+
+`--format` accepts `md`, `txt`, `json`, or comma-separated combinations. `all`
+remains shorthand for `md,txt,json`. With multiple formats, `--out` is treated
+as a directory and files are named from the input stem. Multiple inputs also
+use directory mode; duplicate input stems are rejected to prevent overwrites.
+JSON output for multiple inputs requires `--out`, and `--searchable-pdf`
+accepts only one input.
+
+`--json-report` was removed in `0.4.0`. Use `--format json --out report.json`
+for JSON-only output or `--format md,json --out results/` for multiple files.
+One invocation no longer mixes a stdout format with an independently named JSON
+sidecar.
 
 ## Peepshow sink
 

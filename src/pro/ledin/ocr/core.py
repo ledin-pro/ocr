@@ -53,7 +53,7 @@ class OcrError(Exception):
         self.code = code
 
 # ── version ───────────────────────────────────────────────────────────────────
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 
 def probe_script_path() -> str:
@@ -1142,7 +1142,7 @@ class RecognizeOptions:
     """Recognition parameters for `process_file()`/`recognize()`.
 
     Mirrors the CLI flags that control *how* a single file is recognized.
-    Output-formatting flags (--out, --format, --json-report, --searchable-pdf)
+    Output-formatting flags (--out, --format, --searchable-pdf)
     are a CLI/output concern handled by `write_outputs()`, not part of this
     library-facing options object.
     """

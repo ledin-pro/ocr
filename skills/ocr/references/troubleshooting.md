@@ -259,11 +259,12 @@ python3 scripts/ocr.py FILE --cache cache.json --force
 | Read by agent / LLM downstream | `--format md` (structured, page headers) |
 | Full-text search / grep | `--format txt` |
 | Programmatic processing | `--format json` (confidence, bboxes, source) |
-| Deliver all three | `--format all` |
+| Deliver multiple formats | `--format md,txt,json --out results/` |
 | Human-readable selectable PDF | `--searchable-pdf OUT.pdf` (needs ocrmypdf) |
 
-The JSON report (`--format json` or `--json-report PATH`) always includes
-`recommend_vision: [page numbers]` listing pages the agent should read manually.
+The `<stem>.json` output (`--format json`, including comma-separated
+combinations) always includes `recommend_vision: [page numbers]` listing pages
+the agent should read manually.
 
 ---
 

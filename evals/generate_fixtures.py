@@ -130,7 +130,7 @@ def images_to_pdf(pages: list[Image.Image], path: Path) -> None:
     """Save a list of RGB PIL images as an image-only PDF (no text layer).
 
     Uses fpdf2 to embed each page as a full-page PNG image inside the PDF.
-    This guarantees pdffonts reports 0 fonts and probe.sh returns needs_ocr=true.
+    This guarantees pdffonts reports 0 fonts and the probe returns needs_ocr=true.
     """
     from fpdf import FPDF
     import tempfile, os
@@ -163,7 +163,7 @@ if __name__ == "__main__":
     p2 = page2()
 
     # Image-only PDF: pages embedded as PNG images, no fonts, no text layer.
-    # probe.sh will return needs_ocr:true ("no fonts found — likely fully image-based PDF").
+    # The Python probe returns needs_ocr:true ("no fonts found").
     images_to_pdf([p1, p2], OUT / "press_release.pdf")
     print("wrote press_release.pdf")
 

@@ -8,6 +8,7 @@ and output writing (formats, files, searchable PDF, quality report).
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 import tempfile
@@ -23,6 +24,8 @@ from .core import (
     OcrError,
     RecognizeOptions,
     _log,
+    classify_input,
+    probe_input,
     process_file,
     to_json,
     to_markdown,
@@ -33,6 +36,7 @@ from .core import (
 
 caps_global: Caps  # set in main()
 OUTPUT_FORMATS = ("md", "txt", "json")
+OCR_ENGINES = ("tesseract", "easyocr", "paddleocr", "vision")
 
 
 def parse_formats(value: str) -> list[str]:
@@ -51,6 +55,74 @@ def parse_formats(value: str) -> list[str]:
             if item not in formats:
                 formats.append(item)
     return formats
+
+
+def parse_engines(value: str) -> tuple[str, ...]:
+    engines: list[str] = []
+    for raw_engine in value.split(","):
+        engine = raw_engine.strip()
+        if not engine:
+            raise argparse.ArgumentTypeError("engine list contains an empty value")
+        if engine not in OCR_ENGINES:
+            raise argparse.ArgumentTypeError(
+                f"unknown engine '{engine}'; choose from {', '.join(OCR_ENGINES)}"
+            )
+        if engine not in engines:
+            engines.append(engine)
+    return tuple(engines)
+
+
+def _write_file_set(files: list[tuple[str, str]]) -> None:
+    staged: list[tuple[str, Path]] = []
+    backups: dict[Path, str] = {}
+    installed: list[Path] = []
+    try:
+        for path, content in files:
+            output = Path(path)
+            output.parent.mkdir(parents=True, exist_ok=True)
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                dir=output.parent,
+                prefix=f".{output.name}.",
+                suffix=".tmp",
+                delete=False,
+            ) as handle:
+                handle.write(content)
+                handle.flush()
+                os.fsync(handle.fileno())
+                staged.append((handle.name, output))
+
+        for _, output in staged:
+            if output.exists():
+                descriptor, backup = tempfile.mkstemp(
+                    dir=output.parent,
+                    prefix=f".{output.name}.",
+                    suffix=".bak",
+                )
+                os.close(descriptor)
+                os.unlink(backup)
+                os.replace(output, backup)
+                backups[output] = backup
+
+        for temp_path, output in staged:
+            os.replace(temp_path, output)
+            installed.append(output)
+    except OSError as exc:
+        for output in installed:
+            if output.exists():
+                output.unlink()
+        for output, backup in backups.items():
+            if os.path.exists(backup):
+                os.replace(backup, output)
+        raise OcrError(f"failed to write output files: {exc}") from exc
+    finally:
+        for temp_path, _ in staged:
+            if os.path.exists(temp_path):
+                os.unlink(temp_path)
+        for backup in backups.values():
+            if os.path.exists(backup):
+                os.unlink(backup)
 
 
 def write_outputs(
@@ -72,6 +144,7 @@ def write_outputs(
 
     formats = args.format
 
+    rendered_outputs = []
     for fmt in formats:
         if fmt == "md":
             content = to_markdown(pages_data, filename)
@@ -79,7 +152,11 @@ def write_outputs(
             content = to_text(pages_data)
         elif fmt == "json":
             content = to_json(pages_data, meta)
-        if args.out:
+        rendered_outputs.append((fmt, content))
+
+    if args.out:
+        files = []
+        for fmt, content in rendered_outputs:
             out_path = args.out
             multiple_inputs = len(getattr(args, "inputs", [input_path])) > 1
             if os.path.isdir(out_path) or len(formats) > 1 or multiple_inputs:
@@ -88,10 +165,12 @@ def write_outputs(
                 out_file = os.path.join(out_path, f"{stem}.{fmt}")
             else:
                 out_file = out_path
-            with open(out_file, "w", encoding="utf-8") as f:
-                f.write(content)
+            files.append((fmt, out_file, content))
+        _write_file_set([(out_file, content) for _, out_file, content in files])
+        for fmt, out_file, _ in files:
             print(f"[ocr] wrote {fmt} → {out_file}", file=sys.stderr)
-        else:
+    else:
+        for fmt, content in rendered_outputs:
             if len(formats) > 1:
                 print(f"\n{'='*60}\n[{fmt.upper()}]\n{'='*60}", flush=True)
             print(content, flush=True)
@@ -133,15 +212,19 @@ Examples:
   ocr scan.pdf --format md,json
   ocr photo.jpg --format md
   ocr doc.pdf --lang rus+eng --preprocess full --format all
-  ocr slides.pdf --engine vision --pages 9,12
+  ocr report.pdf --probe
   ocr table.png --engine vision --vision-prompt-file table-prompt.txt
   ocr *.pdf --cache cache.json --format txt
         """,
     )
     p.add_argument("inputs", nargs="+", metavar="INPUT", help="PDF or image file(s)")
-    p.add_argument("--engine", default="auto",
-                   choices=["auto", "tesseract", "easyocr", "paddleocr", "vision", "vision-api"],
-                   help="OCR engine (default: auto)")
+    p.add_argument(
+        "--engine",
+        choices=["tesseract", "easyocr", "paddleocr", "vision"],
+        help="OCR backend (default: OCR_ENGINE or tesseract)",
+    )
+    p.add_argument("--probe", action="store_true",
+                   help="Print NDJSON input probe results and exit")
     p.add_argument("--lang", default="auto",
                    help="Tesseract language code(s), e.g. rus+eng (default: auto via OSD)")
     p.add_argument(
@@ -172,17 +255,22 @@ Examples:
                    help="Ignore cache and re-process all files")
     p.add_argument("--skip-ocr", action="store_true",
                    help="Only process files with a real text layer; skip OCR")
+    p.add_argument(
+        "--auto-escalate",
+        type=parse_engines,
+        help="Retry flagged pages through comma-separated engines",
+    )
     p.add_argument("--no-cleanup", action="store_true",
                    help="Skip whitespace / ligature cleanup of OCR output")
     p.add_argument("--vision-api-url", default="",
-                   help="OpenAI-compatible base URL for --engine vision-api")
+                   help="OpenAI-compatible base URL for --engine vision")
     p.add_argument("--vision-api-key", default="",
-                   help="API key for --engine vision-api (required; env vars are not read)")
+                   help="API key for --engine vision (required; env vars are not read)")
     p.add_argument("--vision-model", default="",
-                   help="Model name for --engine vision-api (required; no default)")
+                   help="Model name for --engine vision (required; no default)")
     prompt_group = p.add_mutually_exclusive_group()
     prompt_group.add_argument("--vision-prompt", default="",
-                              help="Custom prompt for --engine vision or vision-api")
+                               help="Custom prompt for --engine vision")
     prompt_group.add_argument("--vision-prompt-file", type=Path,
                               help="UTF-8 file containing a custom vision prompt")
     p.add_argument("--searchable-pdf", default="",
@@ -194,8 +282,12 @@ Examples:
 
 def _vision_prompt_from_args(args: argparse.Namespace, parser: argparse.ArgumentParser) -> str:
     if ((args.vision_prompt or args.vision_prompt_file is not None)
-            and args.engine not in ("vision", "vision-api")):
-        parser.error("--vision-prompt and --vision-prompt-file require --engine vision or vision-api")
+            and args.engine != "vision"
+            and "vision" not in (args.auto_escalate or ())):
+        parser.error(
+            "--vision-prompt and --vision-prompt-file require vision as the "
+            "baseline or escalation engine"
+        )
     if args.vision_prompt_file is None:
         return args.vision_prompt
     try:
@@ -236,12 +328,84 @@ def _validate_output_args(
         )
 
 
+def _validate_probe_args(
+    args: argparse.Namespace,
+    parser: argparse.ArgumentParser,
+) -> None:
+    if not args.probe:
+        return
+    incompatible = []
+    if args.engine is not None:
+        incompatible.append("--engine")
+    if args.out:
+        incompatible.append("--out")
+    if args.searchable_pdf:
+        incompatible.append("--searchable-pdf")
+    if args.auto_escalate:
+        incompatible.append("--auto-escalate")
+    if any((args.vision_api_url, args.vision_api_key, args.vision_model,
+            args.vision_prompt, args.vision_prompt_file)):
+        incompatible.append("vision options")
+    if incompatible:
+        parser.error(f"--probe cannot be combined with {', '.join(incompatible)}")
+
+
+def _resolve_engine(args: argparse.Namespace, parser: argparse.ArgumentParser) -> str:
+    engine = args.engine or os.environ.get("OCR_ENGINE", "tesseract")
+    valid = {"tesseract", "easyocr", "paddleocr", "vision"}
+    if engine not in valid:
+        parser.error(
+            f"OCR_ENGINE has invalid value '{engine}'; choose from "
+            f"{', '.join(sorted(valid))}"
+        )
+    return engine
+
+
+def _resolve_auto_escalate(
+    args: argparse.Namespace,
+    parser: argparse.ArgumentParser,
+) -> tuple[str, ...]:
+    engines = args.auto_escalate
+    if engines is None:
+        raw = os.environ.get("OCR_AUTO_ESCALATE", "").strip()
+        if not raw:
+            return ()
+        try:
+            engines = parse_engines(raw)
+        except argparse.ArgumentTypeError as exc:
+            parser.error(f"OCR_AUTO_ESCALATE: {exc}")
+    return tuple(engine for engine in engines if engine != args.engine)
+
+
 # ── entry point ───────────────────────────────────────────────────────────────
 
 def run(argv: list[str] | None = None) -> None:
     global caps_global
     parser = build_parser()
     args = parser.parse_args(argv)
+    _validate_probe_args(args, parser)
+    if args.probe:
+        caps = Caps(verbose=args.verbose)
+        for input_path in args.inputs:
+            if not os.path.exists(input_path):
+                parser.error(f"file not found: {input_path}")
+            try:
+                result = probe_input(input_path, caps, args.verbose)
+            except OcrError as exc:
+                input_type = classify_input(input_path)
+                print(json.dumps({
+                    "path": os.path.abspath(input_path),
+                    "input_type": input_type,
+                    "status": "error",
+                    "needs_ocr": False,
+                    "reason": str(exc),
+                }, ensure_ascii=False))
+                raise
+            print(json.dumps(result, ensure_ascii=False))
+        return
+
+    args.engine = _resolve_engine(args, parser)
+    args.auto_escalate = _resolve_auto_escalate(args, parser)
     _validate_output_args(args, parser)
     vision_prompt = _vision_prompt_from_args(args, parser)
 
@@ -261,28 +425,17 @@ def run(argv: list[str] | None = None) -> None:
         vision_model=args.vision_model,
         vision_prompt=vision_prompt,
         verbose=args.verbose,
+        auto_escalate=args.auto_escalate,
+        skip_ocr=args.skip_ocr,
     )
 
     caps = Caps(verbose=args.verbose)
     caps_global = caps
 
-    # Validate binary requirements for the chosen engine
-    if args.engine in ("auto", "tesseract"):
-        caps.require_ocr()
-
     cache = Cache(args.cache if args.cache else None)
 
-    # Vision handoff must persist rendered PNGs after this process exits so the
-    # calling agent (Claude, GPT, or any multimodal model) can read them.
-    # Other engines use a throwaway temp dir.
-    if args.engine == "vision":
-        tmpdir = tempfile.mkdtemp(prefix="ocr_skill_vision_")
-        print(f"[ocr] vision PNGs will persist in: {tmpdir}", file=sys.stderr)
-        cleanup_tmp = False
-    else:
-        tmp_ctx = tempfile.TemporaryDirectory(prefix="ocr_skill_")
-        tmpdir = tmp_ctx.name
-        cleanup_tmp = True
+    tmp_ctx = tempfile.TemporaryDirectory(prefix="ocr_skill_")
+    tmpdir = tmp_ctx.name
 
     try:
         for input_path in args.inputs:
@@ -303,15 +456,13 @@ def run(argv: list[str] | None = None) -> None:
 
             effective_dpi = args.dpi or 0
 
-            write_outputs(pages_data, input_path, args, effective_lang, effective_dpi)
-
             elapsed = time.time() - t_start
             total_chars = sum(len(p.get("text", "")) for p in pages_data)
             _log(f"done: {len(pages_data)} pages, {total_chars} chars, {elapsed:.1f}s total",
                  args.verbose)
+            write_outputs(pages_data, input_path, args, effective_lang, effective_dpi)
     finally:
-        if cleanup_tmp:
-            tmp_ctx.cleanup()
+        tmp_ctx.cleanup()
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -322,19 +473,6 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[ocr] ERROR: {exc}", file=sys.stderr)
         return exc.code
     return 0
-
-
-def probe_main(argv: list[str] | None = None) -> int:
-    """Console-script entry point (`ocr-probe`): run the bundled probe.sh helper.
-
-    Triages a single file for OCR need and prints one-line JSON to stdout.
-    """
-    import subprocess
-
-    from .core import probe_script_path
-
-    args = list(sys.argv[1:] if argv is None else argv)
-    return subprocess.run(["bash", probe_script_path(), *args]).returncode
 
 
 if __name__ == "__main__":

@@ -6,7 +6,7 @@ Public library API (import as ``from pro.ledin import ocr``):
     markdown = ocr.to_markdown(pages, "scan.pdf")
 
 Catch ``ocr.OcrError`` for recoverable failures (missing binaries/packages,
-unsupported input, vision-api config). The library never calls ``sys.exit()``.
+unsupported input, vision config). The library never calls ``sys.exit()``.
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ from .core import (
     OcrError,
     RecognizeOptions,
     __version__,
-    probe_script_path,
+    probe_input,
     process_file,
     recognize,
     resolve_vision_prompt,
@@ -46,7 +46,7 @@ __all__ = [
     "OcrError",
     "RecognizeOptions",
     "__version__",
-    "probe_script_path",
+    "probe_input",
     "process_file",
     "recognize",
     "resolve_vision_prompt",

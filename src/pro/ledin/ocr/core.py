@@ -10,7 +10,7 @@ Library usage:  from pro.ledin import ocr
                 pages = ocr.recognize("scan.pdf", ocr.RecognizeOptions(engine="tesseract"))
                 markdown = ocr.to_markdown(pages, "scan.pdf")
                 Catch `ocr.OcrError` for recoverable failures (missing
-                binaries/packages, unsupported input, vision-api config).
+                binaries/packages, unsupported input, vision config).
 
 CLI usage:      ocr INPUT [INPUT ...] [options]   (see `ocr --help`)
 """
@@ -28,7 +28,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, NoReturn
 
@@ -41,7 +41,7 @@ EXIT_MISSING_BINARY = 4
 
 class OcrError(Exception):
     """Recoverable OCR failure: bad input, missing binaries/packages, or a
-    vision-api configuration/request error.
+    vision configuration/request error.
 
     CLI: `main()` catches this at the top level, prints `[ocr] ERROR: ...` to
     stderr, and exits with `.code`.
@@ -53,12 +53,7 @@ class OcrError(Exception):
         self.code = code
 
 # ── version ───────────────────────────────────────────────────────────────────
-__version__ = "0.4.0"
-
-
-def probe_script_path() -> str:
-    """Absolute path to the bundled probe.sh helper shipped with this package."""
-    return str(Path(__file__).resolve().parent / "probe.sh")
+__version__ = "0.5.0"
 
 
 # ── constants ─────────────────────────────────────────────────────────────────
@@ -132,6 +127,8 @@ class Caps:
         self.bin_pdftoppm = shutil.which("pdftoppm")
         self.bin_pdftotext = shutil.which("pdftotext")
         self.bin_pdfinfo = shutil.which("pdfinfo")
+        self.bin_pdffonts = shutil.which("pdffonts")
+        self.bin_pdfimages = shutil.which("pdfimages")
         self.bin_tesseract = shutil.which("tesseract")
         self.bin_ocrmypdf = shutil.which("ocrmypdf")
 
@@ -203,6 +200,10 @@ def _log(msg: str, verbose: bool) -> None:
         print(f"[ocr] {msg}", file=sys.stderr)
 
 
+def _nonspace_byte_count(text: str) -> int:
+    return len(re.sub(r"\s+", "", text).encode("utf-8"))
+
+
 def _run(cmd: list[str], capture: bool = True, check: bool = True) -> subprocess.CompletedProcess:
     return subprocess.run(
         cmd,
@@ -272,77 +273,199 @@ def classify_input(path: str) -> str:
 
 # ── PDF probing ───────────────────────────────────────────────────────────────
 
+MIN_TEXT_CHARS = 30
+HIGH_SMASK_COUNT = 3
+
+
+def decide_probe(signals: dict[str, Any]) -> dict[str, Any]:
+    """Apply the canonical text-layer decision to collected probe signals."""
+    encrypted = bool(signals.get("encrypted"))
+    median = int(signals.get("median_chars") or 0)
+    total_fonts = signals.get("total_fonts")
+    non_unicode_fonts = signals.get("non_unicode_fonts")
+    smask_count = signals.get("smask_count")
+
+    suspected_rasterized = bool(
+        total_fonts is not None
+        and (total_fonts == 0 or (non_unicode_fonts or 0) > 0)
+    )
+    high_image_coverage = bool(
+        smask_count is not None and smask_count >= HIGH_SMASK_COUNT
+    )
+
+    if encrypted:
+        status = "blocked"
+        has_text_layer = False
+        needs_ocr = False
+        reason_parts = ["PDF is encrypted; decrypt it before processing"]
+    elif median >= MIN_TEXT_CHARS and not (
+        suspected_rasterized and high_image_coverage
+    ):
+        status = "ready"
+        has_text_layer = True
+        needs_ocr = False
+        reason_parts = [f"median {median} chars/page; usable text layer"]
+    else:
+        status = "ready"
+        has_text_layer = False
+        needs_ocr = True
+        reason_parts = [
+            f"median {median} non-space chars/page (threshold: {MIN_TEXT_CHARS})"
+        ]
+
+    if suspected_rasterized:
+        if total_fonts == 0:
+            reason_parts.append("no fonts found")
+        else:
+            reason_parts.append(
+                f"{non_unicode_fonts}/{total_fonts} fonts non-Unicode"
+            )
+    if high_image_coverage:
+        reason_parts.append(f"{smask_count} image masks detected")
+
+    font_coverage = None
+    if total_fonts:
+        font_coverage = round(
+            (total_fonts - (non_unicode_fonts or 0)) / total_fonts,
+            4,
+        )
+
+    return {
+        **signals,
+        "status": status,
+        "has_text_layer": has_text_layer,
+        "needs_ocr": needs_ocr,
+        "suspected_rasterized_text": suspected_rasterized,
+        "high_image_coverage": high_image_coverage,
+        "font_unicode_coverage": font_coverage,
+        "reason": "; ".join(reason_parts),
+    }
+
+
+def probe_input(path: str, caps: Caps, verbose: bool = False) -> dict[str, Any]:
+    input_type = classify_input(path)
+    absolute_path = os.path.abspath(path)
+    if input_type == "unsupported":
+        _fatal(f"Unsupported file type: {path}", EXIT_UNSUPPORTED)
+    if input_type == "image":
+        return {
+            "path": absolute_path,
+            "input_type": "image",
+            "status": "ready",
+            "pages": 1,
+            "needs_ocr": True,
+            "reason": "image input requires OCR",
+            "median_chars": 0,
+            "per_page_chars": [0],
+            "has_text_layer": False,
+            "suspected_rasterized_text": False,
+            "encrypted": False,
+            "high_image_coverage": False,
+            "font_unicode_coverage": None,
+            "total_fonts": None,
+            "non_unicode_fonts": None,
+            "image_count": None,
+            "smask_count": None,
+        }
+    return probe_pdf(path, caps, verbose)
+
+
 def probe_pdf(path: str, caps: Caps, verbose: bool = False) -> dict[str, Any]:
-    """
-    Quick text-layer probe. Returns dict with needs_ocr, has_text_layer,
-    pages, per_page_chars, median_chars, reason.
-    Uses PyMuPDF if available (faster), falls back to pdftotext.
-    """
-    if caps.has_fitz:
-        return _probe_fitz(path, verbose)
-    caps.require_pdftotext()
-    return _probe_pdftotext(path, caps, verbose)
-
-
-def _probe_fitz(path: str, verbose: bool) -> dict[str, Any]:
-    import fitz
-    doc = fitz.open(path)
-    pages = len(doc)
-    per_page_chars = []
-    for page in doc:
-        text = page.get_text().replace(" ", "").replace("\n", "")
-        per_page_chars.append(len(text))
-    doc.close()
-    return _make_probe_result(pages, per_page_chars, verbose)
-
-
-def _probe_pdftotext(path: str, caps: Caps, verbose: bool) -> dict[str, Any]:
-    # Get page count from pdfinfo
+    """Collect PDF signals and apply the canonical probe decision."""
     pages = 1
+    encrypted = False
+    per_page_chars: list[int] = []
+
+    if caps.has_fitz:
+        import fitz
+
+        doc = fitz.open(path)
+        pages = len(doc)
+        encrypted = bool(doc.needs_pass)
+        if not encrypted:
+            for page in doc:
+                per_page_chars.append(_nonspace_byte_count(page.get_text()))
+        doc.close()
+
     if caps.bin_pdfinfo:
         try:
-            r = _run([caps.bin_pdfinfo, path])
-            for line in r.stdout.splitlines():
-                if line.lower().startswith("pages:"):
+            for line in _run([caps.bin_pdfinfo, path]).stdout.splitlines():
+                lower = line.lower()
+                if lower.startswith("pages:"):
                     pages = int(line.split(":", 1)[1].strip())
-                    break
+                elif lower.startswith("encrypted:"):
+                    encrypted = line.split(":", 1)[1].strip().lower().startswith("yes")
         except Exception:
             pass
 
-    per_page_chars = []
-    for p in range(1, pages + 1):
+    if not encrypted and not per_page_chars:
+        caps.require_pdftotext()
+        for page_number in range(1, pages + 1):
+            try:
+                result = _run([
+                    caps.bin_pdftotext,
+                    "-layout",
+                    "-f",
+                    str(page_number),
+                    "-l",
+                    str(page_number),
+                    path,
+                    "-",
+                ])
+                count = _nonspace_byte_count(result.stdout)
+            except Exception:
+                count = 0
+            per_page_chars.append(count)
+
+    counts = sorted(per_page_chars or [0])
+    median = counts[len(counts) // 2]
+
+    total_fonts = None
+    non_unicode_fonts = None
+    if caps.bin_pdffonts and not encrypted:
         try:
-            r = _run([caps.bin_pdftotext, "-layout", "-f", str(p), "-l", str(p), path, "-"])
-            chars = len(r.stdout.replace(" ", "").replace("\n", ""))
+            rows = [
+                line.split()
+                for line in _run([caps.bin_pdffonts, path]).stdout.splitlines()[2:]
+                if line.strip()
+            ]
+            total_fonts = len(rows)
+            non_unicode_fonts = sum(
+                1 for row in rows if len(row) > 5 and row[5].lower() == "no"
+            )
         except Exception:
-            chars = 0
-        per_page_chars.append(chars)
+            pass
 
-    return _make_probe_result(pages, per_page_chars, verbose)
+    image_count = None
+    smask_count = None
+    if caps.bin_pdfimages and not encrypted:
+        try:
+            rows = [
+                line.split()
+                for line in _run([caps.bin_pdfimages, "-list", path]).stdout.splitlines()[2:]
+                if line.strip()
+            ]
+            image_count = len(rows)
+            smask_count = sum(
+                1 for row in rows if len(row) > 2 and row[2].lower() == "smask"
+            )
+        except Exception:
+            pass
 
-
-def _make_probe_result(pages: int, per_page_chars: list[int], verbose: bool) -> dict[str, Any]:
-    if not per_page_chars:
-        per_page_chars = [0]
-    sorted_counts = sorted(per_page_chars)
-    median = sorted_counts[len(sorted_counts) // 2]
-
-    has_text_layer = median >= 100
-    needs_ocr = not has_text_layer
-
-    if has_text_layer:
-        reason = f"median {median} chars/page — real text layer"
-    else:
-        reason = f"median {median} non-space chars/page (< 100 threshold) — rasterized text"
-
-    return {
+    result = decide_probe({
+        "path": os.path.abspath(path),
+        "input_type": "pdf",
         "pages": pages,
+        "encrypted": encrypted,
         "per_page_chars": per_page_chars,
         "median_chars": median,
-        "has_text_layer": has_text_layer,
-        "needs_ocr": needs_ocr,
-        "reason": reason,
-    }
+        "total_fonts": total_fonts,
+        "non_unicode_fonts": non_unicode_fonts,
+        "image_count": image_count,
+        "smask_count": smask_count,
+    })
+    _log(f"probe: {result['reason']}", verbose)
+    return result
 
 
 # ── text-layer extraction ─────────────────────────────────────────────────────
@@ -893,7 +1016,7 @@ def resolve_vision_config(
     vision_api_url: str = "",
 ) -> tuple[str, str, str | None]:
     """
-    Validate and normalize vision-api credentials passed explicitly by the
+    Validate and normalize vision credentials passed explicitly by the
     caller (CLI flags or a library's RecognizeOptions). Never reads
     OPENAI_API_KEY or any other environment variable. Raises OcrError if key
     or model is empty.
@@ -902,9 +1025,9 @@ def resolve_vision_config(
     model = (vision_model or "").strip()
     endpoint = (vision_api_url or "").strip() or None
     if not key:
-        _fatal("vision_api_key is required for engine=vision-api (CLI: --vision-api-key).", EXIT_BAD_ARGS)
+        _fatal("vision_api_key is required for engine=vision (CLI: --vision-api-key).", EXIT_BAD_ARGS)
     if not model:
-        _fatal("vision_model is required for engine=vision-api (CLI: --vision-model).", EXIT_BAD_ARGS)
+        _fatal("vision_model is required for engine=vision (CLI: --vision-model).", EXIT_BAD_ARGS)
     return key, model, endpoint
 
 
@@ -936,7 +1059,7 @@ def _encode_page_b64(img_path: str, verbose: bool = False) -> tuple[str, str]:
     try:
         from PIL import Image
     except ImportError:
-        _fatal("Pillow required to downscale an oversized page image for vision-api.\n"
+        _fatal("Pillow required to downscale an oversized page image for vision.\n"
                "Install: uv run --with pillow,openai python3 ocr.py ...", EXIT_MISSING_BINARY)
     img = Image.open(io.BytesIO(raw)).convert("RGB")
 
@@ -960,7 +1083,7 @@ def _encode_page_b64(img_path: str, verbose: bool = False) -> tuple[str, str]:
     return base64.b64encode(data).decode(), "image/jpeg"
 
 
-def vision_api(
+def vision_ocr(
     img_paths: list[tuple[int, str]],
     *,
     vision_api_url: str = "",
@@ -988,7 +1111,10 @@ def vision_api(
     client_kwargs: dict[str, Any] = {"api_key": key, "base_url": endpoint}
     if timeout is not None:
         client_kwargs["timeout"] = timeout
-    client = OpenAI(**client_kwargs)
+    try:
+        client = OpenAI(**client_kwargs)
+    except Exception as exc:
+        raise OcrError("vision client initialization failed") from exc
     parts_by_page: list[str] = []
 
     for pnum, png_path in img_paths:
@@ -999,12 +1125,17 @@ def vision_api(
              "image_url": {"url": f"data:{media_type};base64,{b64}", "detail": "high"}},
             {"type": "text", "text": prompt},
         ]
-        resp = client.chat.completions.create(
-            model=model,
-            messages=[{"role": "user", "content": content}],
-            max_tokens=4096,
-        )
-        page_text = resp.choices[0].message.content or ""
+        try:
+            resp = client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": content}],
+                max_tokens=4096,
+            )
+            page_text = resp.choices[0].message.content or ""
+        except Exception as exc:
+            raise OcrError(f"vision request failed for page {pnum}") from exc
+        if not page_text.strip():
+            raise OcrError(f"vision returned an empty result for page {pnum}")
         parts_by_page.append(f"## Page {pnum}\n\n{page_text}")
 
     return "\n\n".join(parts_by_page)
@@ -1126,13 +1257,37 @@ class Cache:
         return self._data.get(key)
 
     def set(self, key: str, value: dict) -> None:
+        missing = object()
+        previous = self._data.get(key, missing)
         self._data[key] = value
         if self._path:
+            path = Path(self._path)
+            temp_path = None
             try:
-                with open(self._path, "w", encoding="utf-8") as f:
-                    json.dump(self._data, f, ensure_ascii=False, indent=2)
-            except Exception:
-                pass
+                path.parent.mkdir(parents=True, exist_ok=True)
+                with tempfile.NamedTemporaryFile(
+                    mode="w",
+                    encoding="utf-8",
+                    dir=path.parent,
+                    prefix=f".{path.name}.",
+                    suffix=".tmp",
+                    delete=False,
+                ) as handle:
+                    temp_path = handle.name
+                    json.dump(self._data, handle, ensure_ascii=False, indent=2)
+                    handle.write("\n")
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                os.replace(temp_path, path)
+            except (OSError, TypeError, ValueError) as exc:
+                if previous is missing:
+                    self._data.pop(key, None)
+                else:
+                    self._data[key] = previous
+                _fatal(f"failed to write cache: {exc}")
+            finally:
+                if temp_path and os.path.exists(temp_path):
+                    os.unlink(temp_path)
 
 
 # ── main processing ───────────────────────────────────────────────────────────
@@ -1146,7 +1301,7 @@ class RecognizeOptions:
     are a CLI/output concern handled by `write_outputs()`, not part of this
     library-facing options object.
     """
-    engine: str = "auto"
+    engine: str = "tesseract"
     lang: str = "auto"
     dpi: int = 0
     preprocess: str = "auto"
@@ -1159,7 +1314,7 @@ class RecognizeOptions:
     vision_api_url: str = ""
     vision_api_key: str = ""
     vision_model: str = ""
-    # Seconds for the vision-api HTTP request (openai SDK client timeout).
+    # Seconds for the vision HTTP request (openai SDK client timeout).
     # None keeps the SDK default. Not used by local engines (tesseract,
     # easyocr, paddleocr): once ocr.py is called as a library rather than run
     # as a CLI subprocess, there is no external process to kill, and a
@@ -1168,9 +1323,11 @@ class RecognizeOptions:
     timeout: float | None = None
     verbose: bool = False
     vision_prompt: str = ""
+    auto_escalate: tuple[str, ...] = ()
+    skip_ocr: bool = False
 
 
-def process_file(
+def _process_file_once(
     path: str,
     options: RecognizeOptions,
     caps: Caps,
@@ -1198,7 +1355,8 @@ def process_file(
     probe: dict | None = None
     if input_type == "pdf":
         probe = probe_pdf(path, caps, verbose)
-        _log(f"probe: {probe['reason']}", verbose)
+        if probe.get("status") == "blocked":
+            _fatal(probe["reason"], EXIT_BAD_ARGS)
 
     # Preprocess level
     pp_level = resolve_preprocess(options.preprocess, probe, caps, input_type)
@@ -1209,6 +1367,25 @@ def process_file(
             options.pages, probe["pages"] if probe else 0, options.max_pages
         )
 
+    if options.skip_ocr and (
+        input_type == "image" or (probe and probe["needs_ocr"])
+    ):
+        selected_pages = page_range or (
+            [1]
+            if input_type == "image"
+            else list(range(1, (probe["pages"] if probe else 0) + 1))
+        )
+        return [{
+            "n": page_number,
+            "source": "skipped",
+            "mean_conf": None,
+            "flag": None,
+            "text": "",
+            "words": [],
+            "skipped": True,
+            "skip_reason": "input requires OCR and --skip-ocr is enabled",
+        } for page_number in selected_pages]
+
     # Cache key
     page_selection = (
         ",".join(str(page) for page in page_range)
@@ -1216,7 +1393,7 @@ def process_file(
         else "all"
     )
     vision_context = ""
-    if options.engine == "vision-api":
+    if options.engine == "vision":
         vision_context = json.dumps({
             "model": options.vision_model.strip(),
             "prompt": resolve_vision_prompt(options.vision_prompt),
@@ -1242,8 +1419,7 @@ def process_file(
     if (input_type == "pdf"
             and probe
             and not probe["needs_ocr"]
-            and not options.force
-            and options.engine == "auto"):
+            and not options.force):
         texts = extract_text_layer(path, page_range, caps)
         for i, text in enumerate(texts):
             pnum = (page_range[i] if page_range else i + 1)
@@ -1259,35 +1435,15 @@ def process_file(
         cache.set(cache_key, {"pages": pages_data})
         return pages_data
 
-    # Vision-handoff path
+    # Automated vision path
     if options.engine == "vision":
+        _require_engine("vision", caps, options)
         caps.require_render()
         if input_type == "pdf":
             rendered = render_pages(path, dpi, page_range, tmpdir, caps, verbose)
         else:
             rendered = [(1, path)]
-        vision_handoff(rendered, verbose, vision_prompt=options.vision_prompt)
-        # Return placeholder pages — agent fills the text
-        for pnum, png in rendered:
-            pages_data.append({
-                "n": pnum,
-                "source": "vision_pending",
-                "mean_conf": None,
-                "flag": "vision",
-                "text": f"[Vision OCR pending — read {png}]",
-                "words": [],
-                "png_path": png,
-            })
-        return pages_data
-
-    # Vision API path
-    if options.engine == "vision-api":
-        caps.require_render()
-        if input_type == "pdf":
-            rendered = render_pages(path, dpi, page_range, tmpdir, caps, verbose)
-        else:
-            rendered = [(1, path)]
-        combined_md = vision_api(
+        combined_md = vision_ocr(
             rendered,
             vision_api_url=options.vision_api_url,
             vision_api_key=options.vision_api_key,
@@ -1296,13 +1452,14 @@ def process_file(
             timeout=options.timeout,
             verbose=verbose,
         )
-        pages_data.append({"n": 0, "source": "vision_api", "mean_conf": None,
+        pages_data.append({"n": 0, "source": "vision", "mean_conf": None,
                             "flag": None, "text": combined_md, "words": []})
         cache.set(cache_key, {"pages": pages_data})
         return pages_data
 
     # EasyOCR path
     if options.engine == "easyocr":
+        _require_engine("easyocr", caps, options)
         if input_type == "pdf":
             rendered = render_pages(path, dpi, page_range, tmpdir, caps, verbose)
         else:
@@ -1311,9 +1468,12 @@ def process_file(
             pp_path = preprocess(img_path, pp_level, caps, tmpdir, verbose)
             text, conf, words = ocr_easyocr(pp_path, caps, verbose)
             cleaned = general_cleanup(text) if not options.no_cleanup else text
+            flag = None
+            if conf < options.min_conf or looks_tabular(words):
+                flag = "review-vision"
             pages_data.append({
                 "n": pnum, "source": "easyocr",
-                "mean_conf": conf, "flag": None,
+                "mean_conf": round(conf, 1), "flag": flag,
                 "text": cleaned, "words": words,
             })
         cache.set(cache_key, {"pages": pages_data})
@@ -1321,6 +1481,7 @@ def process_file(
 
     # PaddleOCR path (opt-in)
     if options.engine == "paddleocr":
+        _require_engine("paddleocr", caps, options)
         if input_type == "pdf":
             rendered = render_pages(path, dpi, page_range, tmpdir, caps, verbose)
         else:
@@ -1347,7 +1508,11 @@ def process_file(
         cache.set(cache_key, {"pages": pages_data})
         return pages_data
 
-    # Default: tesseract (auto or explicit)
+    if options.engine != "tesseract":
+        _fatal(f"Unsupported OCR engine: {options.engine}", EXIT_BAD_ARGS)
+
+    # Tesseract
+    caps.require_ocr()
     if input_type == "pdf":
         rendered = render_pages(path, dpi, page_range, tmpdir, caps, verbose)
     else:
@@ -1385,6 +1550,164 @@ def process_file(
     return pages_data
 
 
+def _require_engine(engine: str, caps: Caps, options: RecognizeOptions) -> None:
+    if engine == "tesseract":
+        caps.require_ocr()
+    elif engine == "easyocr":
+        if not caps.has_easyocr:
+            _fatal(
+                "easyocr not installed. Install pro-ledin-ocr[easyocr].",
+                EXIT_MISSING_BINARY,
+            )
+    elif engine == "paddleocr":
+        caps.require_paddleocr()
+    elif engine == "vision":
+        if not caps.has_openai:
+            _fatal(
+                "openai package not installed. Install pro-ledin-ocr[vision].",
+                EXIT_MISSING_BINARY,
+            )
+        resolve_vision_config(
+            options.vision_api_key,
+            options.vision_model,
+            options.vision_api_url,
+        )
+    else:
+        _fatal(f"Unsupported OCR engine: {engine}", EXIT_BAD_ARGS)
+
+
+def _workflow_cache_key(path: str, options: RecognizeOptions) -> str:
+    stat = os.stat(path)
+    config = {
+        "path": os.path.abspath(path),
+        "mtime": stat.st_mtime,
+        "size": stat.st_size,
+        "engine": options.engine,
+        "lang": options.lang,
+        "dpi": options.dpi,
+        "preprocess": options.preprocess,
+        "pages": options.pages,
+        "max_pages": options.max_pages,
+        "psm": options.psm,
+        "min_conf": options.min_conf,
+        "cleanup": not options.no_cleanup,
+        "auto_escalate": options.auto_escalate,
+        "vision_url": options.vision_api_url,
+        "vision_model": options.vision_model,
+        "vision_prompt": resolve_vision_prompt(options.vision_prompt),
+    }
+    return hashlib.sha1(
+        json.dumps(config, ensure_ascii=False, sort_keys=True).encode()
+    ).hexdigest()
+
+
+def _flag_reasons(page: dict, min_conf: float) -> list[str]:
+    reasons = []
+    confidence = page.get("mean_conf")
+    if confidence is not None and confidence < min_conf:
+        reasons.append("low_confidence")
+    if looks_tabular(page.get("words", [])):
+        reasons.append("table_like")
+    return reasons or ([str(page["flag"])] if page.get("flag") else [])
+
+
+def process_file(
+    path: str,
+    options: RecognizeOptions,
+    caps: Caps,
+    cache: Cache,
+    tmpdir: str,
+) -> list[dict]:
+    """Process one file, optionally escalating flagged pages strictly."""
+    if not options.auto_escalate or options.skip_ocr:
+        return _process_file_once(path, options, caps, cache, tmpdir)
+
+    if classify_input(path) == "pdf" and not options.force:
+        initial_probe = probe_pdf(path, caps, options.verbose)
+        if initial_probe.get("status") == "blocked":
+            _fatal(initial_probe["reason"], EXIT_BAD_ARGS)
+        if not initial_probe["needs_ocr"]:
+            return _process_file_once(path, options, caps, cache, tmpdir)
+
+    for engine in options.auto_escalate:
+        _require_engine(engine, caps, options)
+
+    workflow_key = _workflow_cache_key(path, options)
+    if not options.force:
+        cached = cache.get(workflow_key)
+        if cached:
+            return cached.get("pages", [])
+
+    single_options = replace(options, auto_escalate=())
+    pages = _process_file_once(path, single_options, caps, Cache(None), tmpdir)
+    flagged = [page for page in pages if page.get("flag")]
+    if not flagged:
+        cache.set(workflow_key, {"pages": pages})
+        return pages
+
+    by_number = {page["n"]: page for page in pages}
+    for baseline in flagged:
+        page_number = baseline["n"]
+        attempts = [{
+            "engine": options.engine,
+            "status": "completed",
+            "mean_conf": baseline.get("mean_conf"),
+        }]
+        selected = baseline
+        selected_score = (
+            not bool(selected.get("flag")),
+            selected.get("mean_conf") or 0.0,
+            len(selected.get("words", [])),
+        )
+
+        for engine in options.auto_escalate:
+            attempt_options = replace(
+                options,
+                engine=engine,
+                pages=str(page_number),
+                force=True,
+                auto_escalate=(),
+                skip_ocr=False,
+            )
+            candidate_pages = _process_file_once(
+                path, attempt_options, caps, Cache(None), tmpdir
+            )
+            if not candidate_pages:
+                _fatal(f"Escalation engine {engine} returned no result")
+            candidate = candidate_pages[0]
+            if not candidate.get("text", "").strip() and not candidate.get("words"):
+                _fatal(f"Escalation engine {engine} returned an empty result")
+            candidate["n"] = page_number
+            attempts.append({
+                "engine": engine,
+                "status": "completed",
+                "mean_conf": candidate.get("mean_conf"),
+            })
+            if engine == "vision":
+                selected = candidate
+            else:
+                score = (
+                    not bool(candidate.get("flag")),
+                    candidate.get("mean_conf") or 0.0,
+                    len(candidate.get("words", [])),
+                )
+                if score > selected_score:
+                    selected = candidate
+                    selected_score = score
+
+        selected["decision"] = {
+            "baseline": options.engine,
+            "flag_reason": _flag_reasons(baseline, options.min_conf),
+            "attempts": attempts,
+            "selected": selected.get("source", options.engine),
+        }
+        by_number[page_number] = selected
+
+    final_pages = [by_number[page["n"]] for page in pages]
+    cache.set(workflow_key, {"pages": final_pages})
+    return final_pages
+
+
 def recognize(
     path: str | Path,
     options: RecognizeOptions | None = None,
@@ -1396,29 +1719,16 @@ def recognize(
 
     Manages a throwaway temp directory for rendered pages and cleans it up
     before returning. Each returned page dict has: n, source, mean_conf,
-    flag, text, words (engine=vision-api instead returns a single combined
+        flag, text, words (engine=vision instead returns a single combined
     page whose `text` holds the whole document's Markdown). Format the
     result with `to_markdown()`, `to_text()`, or `to_json()`.
 
-    `--engine vision` renders pages and hands them to an interactive
-    multimodal agent to read; it has no meaningful return value here, so
-    `recognize()` rejects it — use the CLI for that handoff workflow, or pick
-    another engine.
-
     Raises:
         OcrError: unsupported input type, missing required binaries/packages,
-            or a vision-api configuration/request failure.
+            or a vision configuration/request failure.
     """
     options = options or RecognizeOptions()
-    if options.engine == "vision":
-        raise OcrError(
-            "engine='vision' hands rendered pages to an interactive agent and "
-            "has no return value; pick another engine or use the CLI.",
-            EXIT_BAD_ARGS,
-        )
     caps = caps or Caps(verbose=options.verbose)
-    if options.engine in ("auto", "tesseract"):
-        caps.require_ocr()
     cache = cache if cache is not None else Cache(None)
     with tempfile.TemporaryDirectory(prefix="ocr_lib_") as tmpdir:
         return process_file(str(path), options, caps, cache, tmpdir)

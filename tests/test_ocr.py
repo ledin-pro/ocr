@@ -178,7 +178,7 @@ class RecognizeOptionsDefaults(unittest.TestCase):
 
     def test_defaults_match_former_argparse_defaults(self):
         options = ocr.RecognizeOptions()
-        self.assertEqual(options.engine, "auto")
+        self.assertEqual(options.engine, "tesseract")
         self.assertEqual(options.lang, "auto")
         self.assertEqual(options.dpi, 0)
         self.assertEqual(options.preprocess, "auto")
@@ -212,33 +212,39 @@ class ProcessFileGuards(unittest.TestCase):
                 ocr.process_file(bogus, ocr.RecognizeOptions(), caps, cache, tmp)
             self.assertEqual(ctx.exception.code, ocr.EXIT_UNSUPPORTED)
 
-    def test_recognize_rejects_vision_engine(self):
-        with self.assertRaises(ocr.OcrError):
-            ocr.recognize("whatever.png", ocr.RecognizeOptions(engine="vision"))
+    def test_recognize_supports_automated_vision_engine(self):
+        caps = types.SimpleNamespace(require_render=lambda: None, has_openai=True)
+        options = ocr.RecognizeOptions(
+            engine="vision",
+            vision_api_key="k",
+            vision_model="m",
+        )
+        with tempfile.NamedTemporaryFile(suffix=".png") as source:
+            with mock.patch.object(ocr, "vision_ocr", return_value="recognized"):
+                pages = ocr.recognize(source.name, options, caps=caps)
+        self.assertEqual(pages[0]["source"], "vision")
+        self.assertEqual(pages[0]["text"], "recognized")
 
-    def test_vision_engines_respect_max_pages(self):
+    def test_vision_engine_respects_max_pages(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "scan.pdf")
             with open(path, "wb") as f:
                 f.write(b"pdf")
-            caps = types.SimpleNamespace(require_render=lambda: None)
+            caps = types.SimpleNamespace(require_render=lambda: None, has_openai=True)
             probe = {"pages": 5, "needs_ocr": True, "reason": "scan"}
-            for engine in ("vision", "vision-api"):
-                with self.subTest(engine=engine):
-                    options = ocr.RecognizeOptions(
-                        engine=engine,
-                        dpi=150,
-                        preprocess="none",
-                        max_pages=2,
-                        vision_api_key="k",
-                        vision_model="m",
-                    )
-                    with (mock.patch.object(ocr, "probe_pdf", return_value=probe),
-                          mock.patch.object(ocr, "render_pages", return_value=[(1, "page.png")]) as render,
-                          mock.patch.object(ocr, "vision_handoff"),
-                          mock.patch.object(ocr, "vision_api", return_value="text")):
-                        ocr.process_file(path, options, caps, ocr.Cache(None), tmp)
-                    self.assertEqual(render.call_args.args[2], [1, 2])
+            options = ocr.RecognizeOptions(
+                engine="vision",
+                dpi=150,
+                preprocess="none",
+                max_pages=2,
+                vision_api_key="k",
+                vision_model="m",
+            )
+            with (mock.patch.object(ocr, "probe_pdf", return_value=probe),
+                  mock.patch.object(ocr, "render_pages", return_value=[(1, "page.png")]) as render,
+                  mock.patch.object(ocr, "vision_ocr", return_value="text")):
+                ocr.process_file(path, options, caps, ocr.Cache(None), tmp)
+            self.assertEqual(render.call_args.args[2], [1, 2])
 
 
 class VisionApiRequest(unittest.TestCase):
@@ -281,7 +287,7 @@ class VisionApiRequest(unittest.TestCase):
                 png = os.path.join(tmp, "p.png")
                 with open(png, "wb") as f:
                     f.write(b"\x89PNG\r\n\x1a\n")
-                ocr.vision_api(
+                ocr.vision_ocr(
                     [(1, png)],
                     vision_api_url="http://x",
                     vision_api_key="k",
@@ -310,6 +316,82 @@ class VisionApiRequest(unittest.TestCase):
         captured = self._call_vision_api(vision_prompt=prompt)
         content = captured["request"]["messages"][0]["content"]
         self.assertEqual(content[1]["text"], prompt)
+
+    def test_provider_error_is_sanitized(self):
+        class FailingCompletions:
+            def create(self, **kwargs):
+                raise RuntimeError("provider secret diagnostics")
+
+        class FakeOpenAI:
+            def __init__(self, **kwargs):
+                self.chat = types.SimpleNamespace(completions=FailingCompletions())
+
+        fake_module = types.ModuleType("openai")
+        fake_module.OpenAI = FakeOpenAI
+        sys.modules["openai"] = fake_module
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".png") as source:
+                with self.assertRaises(ocr.OcrError) as context:
+                    ocr.vision_ocr(
+                        [(1, source.name)],
+                        vision_api_key="k",
+                        vision_model="m",
+                    )
+            self.assertNotIn("provider secret", str(context.exception))
+            self.assertIn("vision request failed", str(context.exception))
+        finally:
+            del sys.modules["openai"]
+
+    def test_client_constructor_error_is_sanitized(self):
+        class FakeOpenAI:
+            def __init__(self, **kwargs):
+                raise RuntimeError("constructor secret")
+
+        fake_module = types.ModuleType("openai")
+        fake_module.OpenAI = FakeOpenAI
+        sys.modules["openai"] = fake_module
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".png") as source:
+                with self.assertRaises(ocr.OcrError) as context:
+                    ocr.vision_ocr(
+                        [(1, source.name)],
+                        vision_api_key="k",
+                        vision_model="m",
+                    )
+            self.assertNotIn("constructor secret", str(context.exception))
+            self.assertIn("initialization failed", str(context.exception))
+        finally:
+            del sys.modules["openai"]
+
+    def test_blank_response_errors(self):
+        class BlankMessage:
+            content = "  "
+
+        class BlankChoice:
+            message = BlankMessage()
+
+        class BlankCompletions:
+            def create(self, **kwargs):
+                return types.SimpleNamespace(choices=[BlankChoice()])
+
+        class FakeOpenAI:
+            def __init__(self, **kwargs):
+                self.chat = types.SimpleNamespace(completions=BlankCompletions())
+
+        fake_module = types.ModuleType("openai")
+        fake_module.OpenAI = FakeOpenAI
+        sys.modules["openai"] = fake_module
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".png") as source:
+                with self.assertRaises(ocr.OcrError) as context:
+                    ocr.vision_ocr(
+                        [(1, source.name)],
+                        vision_api_key="k",
+                        vision_model="m",
+                    )
+            self.assertIn("empty result", str(context.exception))
+        finally:
+            del sys.modules["openai"]
 
 
 class VisionPromptCli(unittest.TestCase):
@@ -363,7 +445,7 @@ class VisionPromptCache(unittest.TestCase):
         url: str = "",
     ) -> None:
         options = ocr.RecognizeOptions(
-            engine="vision-api",
+            engine="vision",
             dpi=150,
             preprocess="none",
             vision_api_key="k",
@@ -371,7 +453,7 @@ class VisionPromptCache(unittest.TestCase):
             vision_api_url=url,
             vision_prompt=prompt,
         )
-        caps = types.SimpleNamespace(require_render=lambda: None)
+        caps = types.SimpleNamespace(require_render=lambda: None, has_openai=True)
         with tempfile.TemporaryDirectory() as tmp:
             ocr.process_file(path, options, caps, cache, tmp)
 
@@ -381,7 +463,7 @@ class VisionPromptCache(unittest.TestCase):
             with open(path, "wb") as f:
                 f.write(b"png")
             cache = ocr.Cache(None)
-            with mock.patch.object(ocr, "vision_api", return_value="text") as call:
+            with mock.patch.object(ocr, "vision_ocr", return_value="text") as call:
                 self._process(path, cache, "Prompt A")
                 self._process(path, cache, "Prompt B")
             self.assertEqual(call.call_count, 2)
@@ -392,7 +474,7 @@ class VisionPromptCache(unittest.TestCase):
             with open(path, "wb") as f:
                 f.write(b"png")
             cache = ocr.Cache(None)
-            with mock.patch.object(ocr, "vision_api", return_value="text") as call:
+            with mock.patch.object(ocr, "vision_ocr", return_value="text") as call:
                 self._process(path, cache, "")
                 self._process(path, cache, " \n")
             self.assertEqual(call.call_count, 1)
@@ -403,7 +485,7 @@ class VisionPromptCache(unittest.TestCase):
             with open(path, "wb") as f:
                 f.write(b"png")
             cache = ocr.Cache(None)
-            with mock.patch.object(ocr, "vision_api", return_value="text") as call:
+            with mock.patch.object(ocr, "vision_ocr", return_value="text") as call:
                 self._process(path, cache, "Prompt", model="model-a", url="http://a")
                 self._process(path, cache, "Prompt", model="model-b", url="http://a")
                 self._process(path, cache, "Prompt", model="model-b", url="http://b")
@@ -412,14 +494,14 @@ class VisionPromptCache(unittest.TestCase):
     def test_page_selection_changes_cache_key(self):
         with tempfile.NamedTemporaryFile(suffix=".pdf") as source:
             cache = ocr.Cache(None)
-            caps = types.SimpleNamespace(require_render=lambda: None)
+            caps = types.SimpleNamespace(require_render=lambda: None, has_openai=True)
             probe = {"pages": 5, "needs_ocr": True, "reason": "scan"}
             with (mock.patch.object(ocr, "probe_pdf", return_value=probe),
                   mock.patch.object(ocr, "render_pages", return_value=[(1, "page.png")]),
-                  mock.patch.object(ocr, "vision_api", return_value="text") as call):
+                  mock.patch.object(ocr, "vision_ocr", return_value="text") as call):
                 for pages in ("1", "2"):
                     options = ocr.RecognizeOptions(
-                        engine="vision-api",
+                        engine="vision",
                         dpi=150,
                         preprocess="none",
                         pages=pages,

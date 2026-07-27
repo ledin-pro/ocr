@@ -2,66 +2,92 @@
 
 [![skills.sh](https://skills.sh/b/ledin-pro/ocr)](https://skills.sh/ledin-pro/ocr)
 
-Layered OCR workhorse: extract text from scanned PDFs and images (PNG/JPG/TIFF/
-HEIC/WEBP) using a tiered engine stack. The baseline path (poppler + tesseract)
-needs zero extra Python installs; heavier engines are opt-in extras.
+Layered OCR workhorse for scanned PDFs and images (PNG/JPG/TIFF/HEIC/WEBP).
+Baseline OCR uses Poppler and Tesseract; EasyOCR, PaddleOCR, and automated vision
+are opt-in engines.
 
 - Import name: `pro.ledin.ocr`
-- Console scripts: `ocr`, `ocr-probe`, `peepshow-sink-ocr`
+- Console scripts: `ocr`, `peepshow-sink-ocr`
+- Interactive vision handoff: `python -m pro.ledin.ocr.vision_handoff`
 - PyPI: `pro-ledin-ocr`
 
 ## Install
 
 ```bash
-pip install pro-ledin-ocr            # baseline
-pip install "pro-ledin-ocr[vision]"  # + OpenAI-compatible vision-api engine
-pip install "pro-ledin-ocr[all]"     # + pymupdf, opencv, easyocr, paddleocr
+pip install pro-ledin-ocr             # baseline
+pip install "pro-ledin-ocr[easyocr]" # EasyOCR
+pip install "pro-ledin-ocr[paddle]"  # PaddleOCR
+pip install "pro-ledin-ocr[vision]"  # automated OpenAI-compatible vision
+pip install "pro-ledin-ocr[all]"     # all optional Python engines/tools
 ```
 
-System binaries required for the local path: `poppler` (pdftoppm, pdftotext,
-pdfinfo) and `tesseract` (with language packs).
+Baseline PDF OCR also needs Poppler (`pdftoppm`, `pdftotext`, `pdfinfo`) and
+Tesseract with required language data:
 
 ```bash
-brew install poppler tesseract tesseract-lang      # macOS
-sudo apt install poppler-utils tesseract-ocr-all   # Debian/Ubuntu
+brew install poppler tesseract tesseract-lang       # macOS
+sudo apt install poppler-utils tesseract-ocr-all    # Debian/Ubuntu
 ```
+
+Windows and engine-specific setup: [`skills/ocr/references/engine-setup.md`](skills/ocr/references/engine-setup.md).
 
 ## CLI
 
 ```bash
-ocr-probe myfile.pdf                          # triage: does it need OCR?
-ocr myfile.pdf --format md,json               # multiple formats to stdout
-ocr myfile.pdf --format md,txt,json --out results/  # one file per format
+ocr myfile.pdf --probe                         # triage only; NDJSON result
+ocr myfile.pdf --format md,json                # multiple formats to stdout
+ocr myfile.pdf --format md,txt,json --out results/
 ocr scan.png --format md
 ocr russian_doc.pdf --lang rus+eng --format md
-ocr scan.pdf --preprocess full                # deskew + denoise
-ocr slides.pdf --engine vision --pages 9,12   # hand pages to a multimodal agent
-ocr table.png --engine vision \
-  --vision-prompt "Extract only table rows and preserve empty cells"
-ocr slides.pdf --engine vision-api \
-  --vision-api-url https://api.example.com/v1 \
+ocr scan.pdf --preprocess full
+ocr slides.pdf --engine vision --pages 9,12 \
   --vision-api-key "$KEY" --vision-model my-vision-model \
-  --vision-prompt-file prompts/faithful-ocr.txt
+  --vision-prompt "Preserve tables and empty cells"
+ocr scan.pdf --auto-escalate easyocr,vision \
+  --vision-api-key "$KEY" --vision-model my-vision-model
 ```
 
-See `ocr --help` for the full flag reference.
+Engine resolution is explicit: `--engine` overrides `OCR_ENGINE`, otherwise
+`tesseract` is used. There is no `auto` engine. Valid engines are `tesseract`,
+`easyocr`, `paddleocr`, and `vision`. `vision` is automated, headless extraction
+through an OpenAI-compatible endpoint; former automated-engine alias is gone.
 
-`--format` accepts `md`, `txt`, `json`, or comma-separated combinations. `all`
-remains shorthand for `md,txt,json`. With multiple formats, `--out` is treated
-as a directory and files are named from the input stem. Multiple inputs also
-use directory mode; duplicate input stems are rejected to prevent overwrites.
-JSON output for multiple inputs requires `--out`, and `--searchable-pdf`
-accepts only one input.
+`--auto-escalate` overrides `OCR_AUTO_ESCALATE`. Both accept an ordered,
+comma-separated chain such as `easyocr,vision`. OCR validates every dependency
+before baseline work. Flagged pages run through every engine in chain, in order.
+Any attempt failure stops run and prevents workflow-cache write. Without a
+configured chain, quality report recommends targeted page rerun.
 
-`--json-report` was removed in `0.4.0`. Use `--format json --out report.json`
-for JSON-only output or `--format md,json --out results/` for multiple files.
-One invocation no longer mixes a stdout format with an independently named JSON
-sidecar.
+Interactive multimodal-agent handoff is separate and does not call vision API:
+
+```bash
+python -m pro.ledin.ocr.vision_handoff slides.pdf \
+  --pages 9,12 --dpi 200 \
+  --vision-prompt "Read visible text and preserve table structure"
+```
+
+Handoff accepts `--pages`, `--dpi`, `--vision-prompt`, and
+`--vision-prompt-file`; it intentionally has no `--max-pages` option.
+
+See `ocr --help` for complete flag reference.
+
+## Output formats
+
+`--format` accepts `md`, `txt`, `json`, comma-separated combinations, or `all`
+(`md,txt,json`). Comma-format behavior introduced in `0.4.0` remains unchanged:
+with multiple formats, `--out` is a directory and files use input stem. Multiple
+inputs also use directory mode; duplicate stems are rejected. JSON output for
+multiple inputs requires `--out`; `--searchable-pdf` accepts one input.
+
+`--json-report` was removed in `0.4.0`. Use
+`--format json --out report.json` for JSON-only output or
+`--format md,json --out results/` for multiple files. One invocation cannot mix
+stdout format with independently named JSON sidecar.
 
 ## Peepshow sink
 
-`peepshow-sink-ocr` reads peepshow's JSON payload from stdin, recognizes each
-primary frame, and atomically writes `<outputDir>/ocr.json`:
+`peepshow-sink-ocr` reads peepshow JSON from stdin, recognizes primary frames,
+and atomically writes `<outputDir>/ocr.json`:
 
 ```bash
 peepshow video.mp4 --sink ocr
@@ -69,25 +95,10 @@ peepshow video.mp4 \
   --sink-cmd 'peepshow-sink-ocr --engine tesseract --lang rus+eng'
 ```
 
-No extra Python dependency is required for the sink interface. Peepshow only
-needs the installed `peepshow-sink-ocr` executable on `PATH`. The default local
-engine still requires Tesseract; `vision-api` requires
-`pip install "pro-ledin-ocr[vision]"`.
-
-Configure named sink runs through `PEEPSHOW_SINK_OCR_*` variables:
-
-```bash
-export PEEPSHOW_SINK_OCR_ENGINE=vision-api
-export PEEPSHOW_SINK_OCR_VISION_API_URL=https://api.example.com/v1
-export PEEPSHOW_SINK_OCR_VISION_API_KEY="$KEY"
-export PEEPSHOW_SINK_OCR_VISION_MODEL=my-vision-model
-export PEEPSHOW_SINK_OCR_TIMEOUT=120
-peepshow video.mp4 --sink ocr
-```
-
-The sink never changes peepshow's manifest or frames and prints no OCR content
-to stdout. `vision-api` sends frame images to the configured external endpoint.
-Protect both API credentials and output directories containing recognized text.
+Named sink configuration uses `PEEPSHOW_SINK_OCR_*` variables, including
+`PEEPSHOW_SINK_OCR_AUTO_ESCALATE`. Automated `vision` works in sink mode with
+`pro-ledin-ocr[vision]`, key, and model. Interactive handoff does not run inside
+sink processes. See [`skills/ocr/references/peepshow-sinks.md`](skills/ocr/references/peepshow-sinks.md).
 
 ## Library
 
@@ -97,7 +108,7 @@ from pro.ledin import ocr
 pages = ocr.recognize(
     "scan.pdf",
     ocr.RecognizeOptions(
-        engine="vision-api",
+        engine="vision",
         vision_api_key="key",
         vision_model="model",
         vision_prompt="Preserve checkbox states and labels.",
@@ -107,22 +118,24 @@ markdown = ocr.to_markdown(pages, "scan.pdf")
 ```
 
 `recognize()` never calls `sys.exit()`; catch `ocr.OcrError` for recoverable
-failures (unsupported input, missing binaries/packages, vision-api config).
+failures such as unsupported input, missing dependencies, or vision config.
 
 ## Engine tiers
 
 | Tier | Engine | Best for | Cost |
-|------|--------|----------|------|
+|---|---|---|---|
 | 0 | pdftotext / PyMuPDF | Real text layers | Free, instant |
-| 1 | tesseract (default) | Clean scans, typed text, 160+ languages | Free |
-| 2 | easyocr | Handwriting, degraded scans | Free, heavy |
-| 2.5 | paddleocr | CJK, multilingual, angled text | Free |
-| 3 | vision (agent reads PNGs) | Tables, charts, complex layouts | Agent tokens |
-| 3.5 | vision-api (OpenAI-compatible) | Headless batch, complex layouts | API cost |
+| 1 | tesseract (default) | Clean scans and typed text | Free |
+| 2 | easyocr | Handwriting and degraded scans | Free, heavy |
+| 2.5 | paddleocr | CJK, multilingual, angled text | Free, heavy |
+| 3 | vision | Automated tables, charts, complex layouts | API cost |
+| Handoff | `python -m pro.ledin.ocr.vision_handoff` | Interactive agent reading | Agent/model tokens |
 
-Full docs: `skills/ocr/SKILL.md`, `skills/ocr/references/engines.md`,
-`skills/ocr/references/peepshow-sinks.md`, and
-`skills/ocr/references/troubleshooting.md`.
+Full docs: [`skills/ocr/SKILL.md`](skills/ocr/SKILL.md),
+[`skills/ocr/references/engines.md`](skills/ocr/references/engines.md),
+[`skills/ocr/references/engine-setup.md`](skills/ocr/references/engine-setup.md),
+[`skills/ocr/references/peepshow-sinks.md`](skills/ocr/references/peepshow-sinks.md), and
+[`skills/ocr/references/troubleshooting.md`](skills/ocr/references/troubleshooting.md).
 
 ## Development
 

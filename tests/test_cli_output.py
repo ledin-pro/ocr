@@ -1,8 +1,10 @@
 import argparse
 import io
 import json
+import os
 import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -245,6 +247,77 @@ class OutputArgumentValidation(unittest.TestCase):
                     "output.pdf",
                 ])
         process.assert_not_called()
+
+
+class OutputTransactions(unittest.TestCase):
+    def test_file_set_failure_restores_all_previous_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            first = Path(tmp) / "first.md"
+            second = Path(tmp) / "second.json"
+            first.write_text("old first", encoding="utf-8")
+            second.write_text("old second", encoding="utf-8")
+            real_replace = os.replace
+
+            def replace_with_failure(source, destination):
+                if str(source).endswith(".tmp") and Path(destination) == second:
+                    raise OSError("disk full")
+                return real_replace(source, destination)
+
+            with mock.patch.object(cli.os, "replace", side_effect=replace_with_failure):
+                with self.assertRaises(cli.OcrError):
+                    cli._write_file_set([
+                        (str(first), "new first"),
+                        (str(second), "new second"),
+                    ])
+            self.assertEqual(first.read_text(encoding="utf-8"), "old first")
+            self.assertEqual(second.read_text(encoding="utf-8"), "old second")
+            self.assertFalse(list(Path(tmp).glob("*.tmp")))
+            self.assertFalse(list(Path(tmp).glob("*.bak")))
+
+    def test_later_input_failure_preserves_first_output(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            first = Path(tmp) / "one.png"
+            second = Path(tmp) / "two.png"
+            first.write_bytes(b"one")
+            second.write_bytes(b"two")
+            output = Path(tmp) / "results"
+            pages = page_result()
+            with (mock.patch.object(cli, "Caps", return_value=types.SimpleNamespace()),
+                  mock.patch.object(
+                      cli,
+                      "process_file",
+                      side_effect=[pages, cli.OcrError("second failed")],
+                  )):
+                with self.assertRaises(cli.OcrError):
+                    cli.run([
+                        str(first),
+                        str(second),
+                        "--format",
+                        "md",
+                        "--out",
+                        str(output),
+                    ])
+            self.assertTrue((output / "one.md").is_file())
+            self.assertFalse((output / "two.md").exists())
+
+
+class ProbeErrorOutput(unittest.TestCase):
+    def test_probe_runtime_error_preserves_pdf_type(self):
+        with tempfile.NamedTemporaryFile(suffix=".pdf") as source:
+            stdout = io.StringIO()
+            with (mock.patch.object(sys, "stdout", stdout),
+                  mock.patch.object(cli, "probe_input", side_effect=cli.OcrError("probe failed"))):
+                with self.assertRaises(cli.OcrError):
+                    cli.run([source.name, "--probe"])
+        self.assertEqual(json.loads(stdout.getvalue())["input_type"], "pdf")
+
+    def test_unsupported_probe_emits_error_json(self):
+        with tempfile.NamedTemporaryFile(suffix=".docx") as source:
+            stdout = io.StringIO()
+            with mock.patch.object(sys, "stdout", stdout):
+                with self.assertRaises(cli.OcrError):
+                    cli.run([source.name, "--probe"])
+        self.assertEqual(json.loads(stdout.getvalue())["input_type"], "unsupported")
 
 
 if __name__ == "__main__":

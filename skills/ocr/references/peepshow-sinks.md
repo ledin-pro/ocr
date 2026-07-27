@@ -1,46 +1,43 @@
 # Peepshow OCR Sink
 
-`peepshow-sink-ocr` is a peepshow-compatible sink executable included in the
-`pro-ledin-ocr` package. It reads one peepshow `--emit json` payload from stdin,
-recognizes each primary frame path, and writes one JSON sidecar.
+`peepshow-sink-ocr` is peepshow-compatible console script included in
+`pro-ledin-ocr`. It reads one `--emit json` payload from stdin, recognizes each
+primary frame, and atomically writes one JSON sidecar.
+
+Current console scripts are `ocr` and `peepshow-sink-ocr`. Interactive handoff
+is Python module `python -m pro.ledin.ocr.vision_handoff`, not sink engine.
 
 ## Dependencies
 
-The interface adds no mandatory Python dependency and does not import the npm
-`peepshow` package. Peepshow discovers `peepshow-sink-ocr` on `PATH`.
-
-Engine requirements remain unchanged:
-
 | Engine | Requirement |
 |---|---|
-| `auto`, `tesseract` | Tesseract binary and requested language packs |
-| `easyocr` | `pro-ledin-ocr[easyocr]` |
-| `paddleocr` | `pro-ledin-ocr[paddle]` |
-| `vision-api` | `pro-ledin-ocr[vision]` plus endpoint key/model |
-| `vision` | Unsupported because it requires interactive agent handoff |
+| `tesseract` | Tesseract binary and requested language data |
+| `easyocr` | `pro-ledin-ocr[easyocr]` and downloaded models |
+| `paddleocr` | `pro-ledin-ocr[paddle]`, matching PaddlePaddle runtime, models |
+| `vision` | `pro-ledin-ocr[vision]`, endpoint key and model |
 
-Peepshow supplies static image frames, so Poppler is not needed by this sink
-path.
+Default sink engine is `tesseract`. There is no `auto` engine. Poppler is not
+needed because peepshow supplies image frames. Missing baseline or escalation
+dependency stops sink before recognition; follow approval workflow in
+`engine-setup.md`.
 
 ## Usage
 
-Named sink with defaults:
-
 ```bash
 peepshow video.mp4 --sink ocr
-```
 
-Explicit command and flags:
-
-```bash
 peepshow video.mp4 \
   --sink-cmd 'peepshow-sink-ocr --engine tesseract --lang rus+eng'
+
+peepshow video.mp4 \
+  --sink-cmd 'peepshow-sink-ocr --engine tesseract --auto-escalate easyocr'
 ```
 
-Named sink with `vision-api` configuration:
+Named sink with automated vision escalation:
 
 ```bash
-export PEEPSHOW_SINK_OCR_ENGINE=vision-api
+export PEEPSHOW_SINK_OCR_ENGINE=tesseract
+export PEEPSHOW_SINK_OCR_AUTO_ESCALATE=easyocr,vision
 export PEEPSHOW_SINK_OCR_VISION_API_URL=https://api.example.com/v1
 export PEEPSHOW_SINK_OCR_VISION_API_KEY="$KEY"
 export PEEPSHOW_SINK_OCR_VISION_MODEL=my-vision-model
@@ -54,9 +51,10 @@ Command flags override environment values.
 
 | Flag | Environment variable | Default |
 |---|---|---|
-| `--engine` | `PEEPSHOW_SINK_OCR_ENGINE` | `auto` |
+| `--engine` | `PEEPSHOW_SINK_OCR_ENGINE` | `tesseract` |
+| `--auto-escalate` | `PEEPSHOW_SINK_OCR_AUTO_ESCALATE` | none |
 | `--lang` | `PEEPSHOW_SINK_OCR_LANG` | `auto` |
-| `--dpi` | `PEEPSHOW_SINK_OCR_DPI` | `0` |
+| `--dpi` | `PEEPSHOW_SINK_OCR_DPI` | `0` (automatic) |
 | `--preprocess` | `PEEPSHOW_SINK_OCR_PREPROCESS` | `auto` |
 | `--psm` | `PEEPSHOW_SINK_OCR_PSM` | `3` |
 | `--min-conf` | `PEEPSHOW_SINK_OCR_MIN_CONF` | `60` |
@@ -68,12 +66,15 @@ Command flags override environment values.
 | `--vision-prompt-file` | `PEEPSHOW_SINK_OCR_VISION_PROMPT_FILE` | empty |
 | `--output` | `PEEPSHOW_SINK_OCR_OUTPUT` | `<outputDir>/ocr.json` |
 
-Prompt text and prompt file are mutually exclusive. Keep API keys in the
-environment rather than shell history or process arguments.
+Escalation value is ordered comma-separated engine chain. Duplicate entries and
+baseline engine are omitted. All dependencies are checked before baseline.
+Flagged frames run through every engine in chain. Any attempt failure aborts
+sink and prevents partial sidecar write.
 
-## Input Contract
+Prompt text and prompt file are mutually exclusive. Keep API keys in environment
+rather than shell history or process arguments.
 
-The sink requires peepshow's core payload fields:
+## Input contract
 
 ```json
 {
@@ -87,18 +88,17 @@ The sink requires peepshow's core payload fields:
 }
 ```
 
-`outputDir` must be an existing absolute directory. At least one frame path
-must name a readable file. Optional thumbnails are ignored; only primary
-`frames[].path` files are recognized.
+`outputDir` must be existing absolute directory. At least one frame path must
+name readable file. Thumbnails are ignored; only `frames[].path` is recognized.
 
-## Output Contract
+## Output contract
 
-Default output is written atomically to `<outputDir>/ocr.json`:
+Default output is atomically written to `<outputDir>/ocr.json`:
 
 ```json
 {
   "schemaVersion": 1,
-  "packageVersion": "0.4.0",
+  "packageVersion": "0.5.0",
   "source": "peepshow",
   "peepshowOutputDir": "/tmp/peepshow-run",
   "strategy": "scene",
@@ -119,20 +119,20 @@ Default output is written atomically to `<outputDir>/ocr.json`:
 }
 ```
 
-Original frame order is preserved. Timestamp metadata is copied when present.
-The sink does not modify `manifest.json`, frame files, or stdout.
+Frame order and available timestamps are preserved. Sink does not modify
+`manifest.json`, frames, or stdout.
 
-## Failure Semantics
+## Failure semantics
 
-- Empty/malformed stdin, invalid payload, missing frames, unsupported
-  interactive `vision`, or OCR failure produces stderr error and non-zero exit.
-- Peepshow treats sink failure as a warning and keeps its successful extraction.
-- Result is written only after every frame succeeds. Atomic replacement avoids
-  partially written `ocr.json`.
+- Empty/malformed stdin, invalid payload, missing frames, invalid engine,
+  missing dependency, or OCR attempt failure writes stderr and exits non-zero.
+- Peepshow keeps successful extraction and treats sink failure as warning.
+- Result writes only after every frame succeeds; atomic replacement avoids
+  partial `ocr.json`.
 
 ## Privacy
 
 - Frame paths and recognized text may contain sensitive information.
-- `vision-api` sends every selected frame to configured external endpoint.
-- API keys and custom prompt text are not written to `ocr.json`.
-- Protect peepshow output directory and review retention/backup behavior.
+- Automated `vision` sends selected frames to configured external endpoint.
+- API keys and prompt text are not written to `ocr.json`.
+- Protect output directory and review retention/backup behavior.

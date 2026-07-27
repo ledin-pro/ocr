@@ -24,7 +24,7 @@ from .core import (
     to_text,
 )
 
-ENGINE_CHOICES = ("auto", "tesseract", "easyocr", "paddleocr", "vision", "vision-api")
+ENGINE_CHOICES = ("tesseract", "easyocr", "paddleocr", "vision")
 PREPROCESS_CHOICES = ("none", "basic", "enhanced", "full", "auto")
 EXIT_RUNTIME = 5
 
@@ -41,6 +41,7 @@ def build_parser() -> argparse.ArgumentParser:
         description="OCR peepshow frame paths from a JSON payload on stdin.",
     )
     parser.add_argument("--engine", choices=ENGINE_CHOICES)
+    parser.add_argument("--auto-escalate")
     parser.add_argument("--lang")
     parser.add_argument("--dpi", type=int)
     parser.add_argument("--preprocess", choices=PREPROCESS_CHOICES)
@@ -91,14 +92,27 @@ def resolve_config(
     env: Mapping[str, str] | None = None,
 ) -> SinkConfig:
     env = os.environ if env is None else env
-    engine = _configured(args, "engine", env, "PEEPSHOW_SINK_OCR_ENGINE", "auto")
+    engine = _configured(args, "engine", env, "PEEPSHOW_SINK_OCR_ENGINE", "tesseract")
     if engine not in ENGINE_CHOICES:
         raise OcrError("PEEPSHOW_SINK_OCR_ENGINE has invalid value", EXIT_BAD_ARGS)
-    if engine == "vision":
-        raise OcrError(
-            "engine='vision' requires an interactive agent; use vision-api or a local engine",
-            EXIT_BAD_ARGS,
-        )
+
+    raw_escalation = _configured(
+        args,
+        "auto_escalate",
+        env,
+        "PEEPSHOW_SINK_OCR_AUTO_ESCALATE",
+        "",
+    )
+    escalation: list[str] = []
+    for raw_engine in raw_escalation.split(",") if raw_escalation else []:
+        escalation_engine = raw_engine.strip()
+        if escalation_engine not in ENGINE_CHOICES:
+            raise OcrError(
+                "PEEPSHOW_SINK_OCR_AUTO_ESCALATE has invalid value",
+                EXIT_BAD_ARGS,
+            )
+        if escalation_engine != engine and escalation_engine not in escalation:
+            escalation.append(escalation_engine)
 
     preprocess = _configured(
         args, "preprocess", env, "PEEPSHOW_SINK_OCR_PREPROCESS", "auto"
@@ -151,6 +165,7 @@ def resolve_config(
         ),
         vision_prompt=vision_prompt,
         timeout=timeout,
+        auto_escalate=tuple(escalation),
     )
     return SinkConfig(options=options, output=output)
 

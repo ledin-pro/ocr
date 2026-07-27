@@ -134,9 +134,9 @@ class Configuration(unittest.TestCase):
                 "PEEPSHOW_SINK_OCR_VISION_PROMPT_FILE": "/tmp/prompt.txt",
             })
 
-    def test_interactive_vision_engine_errors(self):
-        with self.assertRaises(sink.OcrError):
-            sink.resolve_config(self.parse("--engine", "vision"), {})
+    def test_vision_engine_is_automated(self):
+        config = sink.resolve_config(self.parse("--engine", "vision"), {})
+        self.assertEqual(config.options.engine, "vision")
 
     def test_invalid_numeric_environment_errors_without_leaking_value(self):
         with self.assertRaises(sink.OcrError) as context:
@@ -186,7 +186,7 @@ class Processing(PeepshowSinkTestCase):
             payload = self.make_payload(tmp)
             config = sink.SinkConfig(
                 options=sink.RecognizeOptions(
-                    engine="vision-api",
+                    engine="vision",
                     vision_api_key="top-secret",
                     vision_prompt="private instructions",
                 ),

@@ -40,6 +40,43 @@ not silently remove requested engine or fall back to another engine.
 when relevant. Propose matching commands from `engine-setup.md`, request user
 approval, install, verify, then rerun exact command. If verification fails, stop.
 
+For callers embedding package, inspect without importing engine:
+
+```python
+result = ocr.probe_engine_requirements(
+    selected_engine,
+    vision_api_key=key,
+    vision_model=model,
+)
+```
+
+Branch on stable `result.code`; render every item in `missing_components`, then
+use `components_relation`, `ocr_extra`, `component_type`, and `first_run_note`
+for remediation. `components_relation="any"` means one listed component suffices;
+`all` means every listed component is required. `missing_component` remains first
+tuple item for older integrations. Recognition raises `OcrRequirementError`
+carrying same fields. Numeric error `.code` remains CLI exit status; stable code
+is `.requirement_code`/`.stable_code`.
+
+Use `ocr.probe_pdf_requirements()` for PDF render/text-layer backends.
+
+## Engine installed but import fails
+
+**Symptom:** Package is present yet OCR stops with requirement error naming same
+package.
+
+**Cause:** Broken build, namespace-package shell, or failed native library load.
+Spec-based detection reports package present; actual import fails.
+
+**Fix:** Reinstall reported component for detected platform following
+`engine-setup.md`. Error keeps stable code, so remediation is unchanged. Raw
+`ImportError` never escapes recognition.
+
+EasyOCR transitive failures use `missing_easyocr_dependency` and identify the
+component where possible. pytesseract, Pillow preprocessing, and OpenCV/NumPy
+preprocessing are optional layers: import failures log fallback instead of
+aborting OCR.
+
 ## Escalation stops midway
 
 **Cause:** Engine attempt failed or returned no page result.

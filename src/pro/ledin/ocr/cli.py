@@ -36,7 +36,7 @@ from .core import (
 
 caps_global: Caps  # set in main()
 OUTPUT_FORMATS = ("md", "txt", "json")
-OCR_ENGINES = ("tesseract", "easyocr", "paddleocr", "vision")
+OCR_ENGINES = ("tesseract", "easyocr", "paddleocr", "paddleocr-vl-mlx", "vision")
 
 
 def parse_formats(value: str) -> list[str]:
@@ -220,7 +220,7 @@ Examples:
     p.add_argument("inputs", nargs="+", metavar="INPUT", help="PDF or image file(s)")
     p.add_argument(
         "--engine",
-        choices=["tesseract", "easyocr", "paddleocr", "vision"],
+        choices=OCR_ENGINES,
         help="OCR backend (default: OCR_ENGINE or tesseract)",
     )
     p.add_argument("--probe", action="store_true",
@@ -267,7 +267,11 @@ Examples:
     p.add_argument("--vision-api-key", default="",
                    help="API key for --engine vision (required; env vars are not read)")
     p.add_argument("--vision-model", default="",
-                   help="Model name for --engine vision (required; no default)")
+                    help="Model name for --engine vision (required; no default)")
+    p.add_argument("--paddle-vl-server-url", default="",
+                   help="Loopback MLX-VLM service URL for --engine paddleocr-vl-mlx")
+    p.add_argument("--paddle-vl-model", default="",
+                   help="PaddleOCR-VL model ID for --engine paddleocr-vl-mlx")
     prompt_group = p.add_mutually_exclusive_group()
     prompt_group.add_argument("--vision-prompt", default="",
                                help="Custom prompt for --engine vision")
@@ -344,15 +348,16 @@ def _validate_probe_args(
     if args.auto_escalate:
         incompatible.append("--auto-escalate")
     if any((args.vision_api_url, args.vision_api_key, args.vision_model,
+            args.paddle_vl_server_url, args.paddle_vl_model,
             args.vision_prompt, args.vision_prompt_file)):
-        incompatible.append("vision options")
+        incompatible.append("engine options")
     if incompatible:
         parser.error(f"--probe cannot be combined with {', '.join(incompatible)}")
 
 
 def _resolve_engine(args: argparse.Namespace, parser: argparse.ArgumentParser) -> str:
     engine = args.engine or os.environ.get("OCR_ENGINE", "tesseract")
-    valid = {"tesseract", "easyocr", "paddleocr", "vision"}
+    valid = set(OCR_ENGINES)
     if engine not in valid:
         parser.error(
             f"OCR_ENGINE has invalid value '{engine}'; choose from "
@@ -385,7 +390,7 @@ def run(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
     _validate_probe_args(args, parser)
     if args.probe:
-        caps = Caps(verbose=args.verbose)
+        caps = Caps(verbose=args.verbose, report=args.verbose)
         for input_path in args.inputs:
             if not os.path.exists(input_path):
                 parser.error(f"file not found: {input_path}")
@@ -423,13 +428,15 @@ def run(argv: list[str] | None = None) -> None:
         vision_api_url=args.vision_api_url,
         vision_api_key=args.vision_api_key,
         vision_model=args.vision_model,
+        paddle_vl_server_url=args.paddle_vl_server_url,
+        paddle_vl_model=args.paddle_vl_model,
         vision_prompt=vision_prompt,
         verbose=args.verbose,
         auto_escalate=args.auto_escalate,
         skip_ocr=args.skip_ocr,
     )
 
-    caps = Caps(verbose=args.verbose)
+    caps = Caps(verbose=args.verbose, report=args.verbose)
     caps_global = caps
 
     cache = Cache(args.cache if args.cache else None)

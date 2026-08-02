@@ -48,7 +48,7 @@ def run(argv: list[str] | None = None) -> None:
     parser = build_parser()
     args = parser.parse_args(argv)
     prompt = _prompt(args, parser)
-    caps = Caps(verbose=args.verbose)
+    caps = Caps(verbose=args.verbose, report=args.verbose)
 
     for input_path in args.inputs:
         if not os.path.exists(input_path):

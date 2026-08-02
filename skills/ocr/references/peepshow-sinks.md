@@ -14,6 +14,7 @@ is Python module `python -m pro.ledin.ocr.vision_handoff`, not sink engine.
 | `tesseract` | Tesseract binary and requested language data |
 | `easyocr` | `pro-ledin-ocr[easyocr]` and downloaded models |
 | `paddleocr` | `pro-ledin-ocr[paddle]`, matching PaddlePaddle runtime, models |
+| `paddleocr-vl-mlx` | `pro-ledin-ocr[paddle-vl]`, loopback MLX-VLM service, model ID |
 | `vision` | `pro-ledin-ocr[vision]`, endpoint key and model |
 
 Default sink engine is `tesseract`. There is no `auto` engine. Poppler is not
@@ -61,6 +62,8 @@ Command flags override environment values.
 | `--vision-api-url` | `PEEPSHOW_SINK_OCR_VISION_API_URL` | empty |
 | `--vision-api-key` | `PEEPSHOW_SINK_OCR_VISION_API_KEY` | empty |
 | `--vision-model` | `PEEPSHOW_SINK_OCR_VISION_MODEL` | empty |
+| `--paddle-vl-server-url` | `PEEPSHOW_SINK_OCR_PADDLE_VL_SERVER_URL` | empty |
+| `--paddle-vl-model` | `PEEPSHOW_SINK_OCR_PADDLE_VL_MODEL` | empty |
 | `--timeout` | `PEEPSHOW_SINK_OCR_TIMEOUT` | SDK default |
 | `--vision-prompt` | `PEEPSHOW_SINK_OCR_VISION_PROMPT` | built-in prompt |
 | `--vision-prompt-file` | `PEEPSHOW_SINK_OCR_VISION_PROMPT_FILE` | empty |
@@ -98,7 +101,7 @@ Default output is atomically written to `<outputDir>/ocr.json`:
 ```json
 {
   "schemaVersion": 1,
-  "packageVersion": "0.5.0",
+  "packageVersion": "0.5.1",
   "source": "peepshow",
   "peepshowOutputDir": "/tmp/peepshow-run",
   "strategy": "scene",

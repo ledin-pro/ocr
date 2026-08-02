@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import importlib.util
+import ipaddress
 import io
 import json
 import os
@@ -28,9 +30,11 @@ import subprocess
 import sys
 import tempfile
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, NoReturn
+from typing import Any, Callable, Mapping, NoReturn
+from urllib.parse import urlparse
 
 # ── exit codes ────────────────────────────────────────────────────────────────
 EXIT_OK = 0
@@ -52,8 +56,62 @@ class OcrError(Exception):
         super().__init__(message)
         self.code = code
 
+
+@dataclass(frozen=True)
+class RequirementResult:
+    """Side-effect-free selected-engine requirement probe result."""
+
+    engine: str
+    available: bool
+    code: str
+    missing_component: str | None = None
+    ocr_extra: str | None = None
+    component_type: str | None = None
+    first_run_note: str | None = None
+    missing_components: tuple[str, ...] = ()
+    # "all": every listed component is required.
+    # "any": installing any single listed component satisfies the requirement.
+    components_relation: str = "all"
+
+    def __post_init__(self) -> None:
+        if self.missing_components:
+            object.__setattr__(self, "missing_component", self.missing_components[0])
+        elif self.missing_component is not None:
+            object.__setattr__(self, "missing_components", (self.missing_component,))
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "engine": self.engine,
+            "available": self.available,
+            "code": self.code,
+            "missing_component": self.missing_component,
+            "missing_components": self.missing_components,
+            "components_relation": self.components_relation,
+            "ocr_extra": self.ocr_extra,
+            "component_type": self.component_type,
+            "first_run_note": self.first_run_note,
+        }
+
+
+class OcrRequirementError(OcrError):
+    """Missing selected-engine dependency or configuration."""
+
+    def __init__(self, result: RequirementResult) -> None:
+        super().__init__(_requirement_message(result), _requirement_exit_code(result))
+        self.result = result
+        self.engine = result.engine
+        self.requirement_code = result.code
+        self.stable_code = result.code
+        self.missing_component = result.missing_component
+        self.missing_components = result.missing_components
+        self.components_relation = result.components_relation
+        self.ocr_extra = result.ocr_extra
+        self.component_type = result.component_type
+        self.first_run_note = result.first_run_note
+
 # ── version ───────────────────────────────────────────────────────────────────
-__version__ = "0.5.0"
+__version__ = "0.5.1"
+OCR_OUTPUT_SCHEMA_VERSION = 2
 
 
 # ── constants ─────────────────────────────────────────────────────────────────
@@ -107,6 +165,420 @@ TESS_TO_PADDLE_LANG: dict[str, str] = {
 DEFAULT_MIN_CONF = 60.0
 DEFAULT_PSM = 3
 SMALL_WIDTH_THRESHOLD = 1400  # px — upscale if narrower
+PADDLEX_OCR_MODULES = (
+    "bs4", "einops", "ftfy", "imagesize", "jinja2", "latex2mathml", "lxml",
+    "cv2", "openpyxl", "premailer", "pyclipper", "pypdfium2", "bidi", "regex",
+    "safetensors", "sklearn", "scipy", "sentencepiece", "shapely", "tiktoken",
+    "tokenizers",
+)
+
+ENGINE_SETUP_GUIDANCE = (
+    "See the pro-ledin-ocr engine setup guide and review platform-specific "
+    "requirements before installing dependencies."
+)
+
+
+def _module_available(name: str) -> bool:
+    try:
+        return importlib.util.find_spec(name) is not None
+    except (ImportError, AttributeError, ValueError):
+        return False
+
+
+def _capability(
+    caps: Any | Mapping[str, Any] | None,
+    name: str,
+    detect: Callable[[], bool],
+) -> bool:
+    if isinstance(caps, Mapping) and name in caps:
+        return bool(caps[name])
+    if caps is not None and hasattr(caps, name):
+        return bool(getattr(caps, name))
+    return detect()
+
+
+def _unavailable_requirement(
+    engine: str,
+    *,
+    vision_api_key: str = "",
+    vision_model: str = "",
+    paddle_vl_server_url: str = "",
+    paddle_vl_model: str = "",
+    **caps_overrides: bool,
+) -> RequirementResult:
+    """Build the probe result for a component known to be unusable."""
+    return probe_engine_requirements(
+        engine,
+        vision_api_key=vision_api_key,
+        vision_model=vision_model,
+        paddle_vl_server_url=paddle_vl_server_url,
+        paddle_vl_model=paddle_vl_model,
+        caps=caps_overrides,
+    )
+
+
+@contextmanager
+def _engine_import(
+    result: RequirementResult | Callable[[BaseException], RequirementResult],
+):
+    """Convert a failing engine import into the documented structured error.
+
+    ``find_spec`` only proves that a module *spec* exists. Broken builds,
+    namespace-package shells, and failed native extension loads still raise at
+    import time, so every engine import site funnels through here to keep the
+    ``OcrError``/``OcrRequirementError`` contract intact.
+    """
+    try:
+        yield
+    except (ImportError, OSError) as exc:
+        # OSError covers native/shared-library load failures that some engine
+        # builds raise instead of ImportError.
+        resolved = result(exc) if callable(result) else result
+        raise OcrRequirementError(resolved) from exc
+
+
+def _fitz_or_fallback(caps: Any, need: str) -> Any | None:
+    """Import PyMuPDF for a PDF need.
+
+    Returns ``None`` when PyMuPDF is unusable but Poppler can still serve the
+    need, so callers take their existing fallback path. Raises the structured
+    requirement error when no backend remains.
+    """
+    try:
+        import fitz
+
+        return fitz
+    except (ImportError, OSError) as exc:
+        without_fitz = {
+            "has_fitz": False,
+            "bin_pdftoppm": _capability(
+                caps, "bin_pdftoppm", lambda: shutil.which("pdftoppm") is not None
+            ),
+            "bin_pdftotext": _capability(
+                caps, "bin_pdftotext", lambda: shutil.which("pdftotext") is not None
+            ),
+        }
+        fallback = _probe_pdf_need(without_fitz, need)
+        if fallback.available:
+            return None
+        raise OcrRequirementError(fallback) from exc
+
+
+def _paddle_import_requirement(exc: BaseException) -> RequirementResult:
+    """Attribute a failing PaddleOCR import to the package or the runtime."""
+    failed_module = getattr(exc, "name", "") or ""
+    root = failed_module.split(".", 1)[0]
+    if root == "paddle":
+        return _unavailable_requirement(
+            "paddleocr", has_paddleocr=True, has_paddle=False
+        )
+    return _unavailable_requirement(
+        "paddleocr", has_paddleocr=False, has_paddle=True
+    )
+
+
+def _paddle_vl_import_requirement(exc: BaseException) -> RequirementResult:
+    """Attribute a failing PaddleOCR-VL import to package or runtime."""
+    failed_module = getattr(exc, "name", "") or ""
+    root = failed_module.split(".", 1)[0]
+    if root == "paddle":
+        return _unavailable_requirement(
+            "paddleocr-vl-mlx", has_paddleocr=True, has_paddle=False,
+            paddle_vl_server_url="http://127.0.0.1:8111/",
+            paddle_vl_model="configured-model",
+        )
+    return _unavailable_requirement(
+        "paddleocr-vl-mlx", has_paddleocr=False, has_paddle=True,
+        paddle_vl_server_url="http://127.0.0.1:8111/",
+        paddle_vl_model="configured-model",
+    )
+
+
+def _is_loopback_url(value: str) -> bool:
+    try:
+        parsed = urlparse(value)
+        hostname = parsed.hostname
+        if parsed.scheme not in {"http", "https"} or not hostname:
+            return False
+        if hostname.casefold() == "localhost":
+            return True
+        return ipaddress.ip_address(hostname).is_loopback
+    except ValueError:
+        return False
+
+
+def _easyocr_dependency_requirement(component: str) -> RequirementResult:
+    return RequirementResult(
+        engine="easyocr",
+        available=False,
+        code="missing_easyocr_dependency",
+        missing_component=component,
+        ocr_extra="easyocr",
+        component_type="python-package",
+        first_run_note="First OCR run may download EasyOCR model weights.",
+    )
+
+
+def _easyocr_import_requirement(exc: BaseException) -> RequirementResult:
+    """Attribute EasyOCR import failures to a transitive module when known."""
+    failed_module = getattr(exc, "name", "") or ""
+    root = failed_module.split(".", 1)[0]
+    if root and root != "easyocr":
+        component = "pillow" if root == "PIL" else root
+        return _easyocr_dependency_requirement(component)
+    return _unavailable_requirement("easyocr", has_easyocr=False)
+
+
+def probe_engine_requirements(
+    engine: str,
+    *,
+    vision_api_key: str = "",
+    vision_model: str = "",
+    paddle_vl_server_url: str = "",
+    paddle_vl_model: str = "",
+    caps: Any | None = None,
+) -> RequirementResult:
+    """Inspect selected-engine requirements without imports or mutation.
+
+    ``caps`` may supply already-detected capability attributes for callers that
+    already created ``Caps``. Without it, executable and module-spec discovery
+    is used; no engine package is imported and no model or network work occurs.
+    """
+    if engine == "tesseract":
+        if not _capability(
+            caps, "bin_tesseract", lambda: shutil.which("tesseract") is not None
+        ):
+            return RequirementResult(
+                engine, False, "missing_tesseract_binary", "tesseract", None, "binary"
+            )
+        return RequirementResult(engine, True, "ok")
+
+    if engine == "easyocr":
+        note = "First OCR run may download EasyOCR model weights."
+        if not _capability(caps, "has_easyocr", lambda: _module_available("easyocr")):
+            return RequirementResult(
+                engine, False, "missing_easyocr_package", "easyocr", "easyocr",
+                "python-package", note,
+            )
+        return RequirementResult(engine, True, "ok", first_run_note=note)
+
+    if engine == "paddleocr":
+        note = "First OCR run may download PaddleOCR/PaddleX model weights."
+        has_paddleocr = _capability(
+            caps, "has_paddleocr", lambda: _module_available("paddleocr")
+        )
+        has_paddle = _capability(
+            caps, "has_paddle", lambda: _module_available("paddle")
+        )
+        if not has_paddleocr and not has_paddle:
+            missing_components = ("paddleocr", "paddle")
+        elif not has_paddleocr:
+            missing_components = ("paddleocr",)
+        elif not has_paddle:
+            missing_components = ("paddle",)
+        else:
+            missing_components = ()
+        if missing_components:
+            missing_component = missing_components[0]
+            missing_runtime_only = missing_components == ("paddle",)
+            return RequirementResult(
+                engine=engine,
+                available=False,
+                code=(
+                    "missing_paddle_runtime"
+                    if missing_runtime_only
+                    else "missing_paddleocr_package"
+                ),
+                missing_component=missing_component,
+                ocr_extra="paddle",
+                component_type=(
+                    "python-runtime" if missing_runtime_only else "python-package"
+                ),
+                first_run_note=note,
+                missing_components=missing_components,
+            )
+        return RequirementResult(engine, True, "ok", first_run_note=note)
+
+    if engine == "paddleocr-vl-mlx":
+        note = (
+            "PaddleOCR-VL layout models may download on first use; start the "
+            "VLM-only backend with 'mlx_vlm.server --host 127.0.0.1 --port 8111'."
+        )
+        has_paddleocr = _capability(
+            caps, "has_paddleocr", lambda: _module_available("paddleocr")
+        )
+        has_paddle = _capability(
+            caps, "has_paddle", lambda: _module_available("paddle")
+        )
+        has_paddlex_ocr = _capability(
+            caps,
+            "has_paddlex_ocr",
+            lambda: all(_module_available(module) for module in PADDLEX_OCR_MODULES),
+        )
+        if not has_paddleocr or not has_paddle:
+            missing_components = tuple(
+                component
+                for component, available in (
+                    ("paddleocr", has_paddleocr),
+                    ("paddle", has_paddle),
+                )
+                if not available
+            )
+            runtime_only = missing_components == ("paddle",)
+            return RequirementResult(
+                engine=engine,
+                available=False,
+                code=(
+                    "missing_paddle_runtime"
+                    if runtime_only
+                    else "missing_paddleocr_doc_parser"
+                ),
+                ocr_extra="paddle-vl",
+                component_type=(
+                    "python-runtime" if runtime_only else "python-package"
+                ),
+                first_run_note=note,
+                missing_components=missing_components,
+            )
+        if not has_paddlex_ocr:
+            return RequirementResult(
+                engine=engine,
+                available=False,
+                code="missing_paddleocr_doc_parser",
+                missing_component="paddleocr[doc-parser]",
+                ocr_extra="paddle-vl",
+                component_type="python-package",
+                first_run_note=note,
+            )
+        if not paddle_vl_server_url.strip():
+            return RequirementResult(
+                engine, False, "missing_paddle_vl_server_url",
+                "paddle_vl_server_url", "paddle-vl", "configuration", note,
+            )
+        if not _is_loopback_url(paddle_vl_server_url.strip()):
+            return RequirementResult(
+                engine, False, "unsafe_paddle_vl_server_url",
+                "paddle_vl_server_url", "paddle-vl", "configuration", note,
+            )
+        if not paddle_vl_model.strip():
+            return RequirementResult(
+                engine, False, "missing_paddle_vl_model",
+                "paddle_vl_model", "paddle-vl", "configuration", note,
+            )
+        return RequirementResult(engine, True, "ok", first_run_note=note)
+
+    if engine == "vision":
+        if not _capability(caps, "has_openai", lambda: _module_available("openai")):
+            return RequirementResult(
+                engine, False, "missing_openai_package", "openai", "vision",
+                "python-package",
+            )
+        if not (vision_api_key or "").strip():
+            return RequirementResult(
+                engine, False, "missing_vision_api_key", "vision_api_key", "vision",
+                "configuration",
+            )
+        if not (vision_model or "").strip():
+            return RequirementResult(
+                engine, False, "missing_vision_model", "vision_model", "vision",
+                "configuration",
+            )
+        return RequirementResult(engine, True, "ok")
+
+    return RequirementResult(
+        engine, False, "unsupported_engine", engine, None, "engine"
+    )
+
+
+PDF_RENDER_COMPONENTS = ("pdftoppm", "pymupdf")
+PDF_TEXT_COMPONENTS = ("pdftotext", "pymupdf")
+
+
+def _probe_pdf_need(caps: Any | None, need: str) -> RequirementResult:
+    """Evaluate one PDF need ('render' or 'text') independently."""
+    has_fitz = _capability(caps, "has_fitz", lambda: _module_available("fitz"))
+    if need == "render":
+        binary, components, code = (
+            "pdftoppm", PDF_RENDER_COMPONENTS, "missing_pdf_render_backend",
+        )
+    else:
+        binary, components, code = (
+            "pdftotext", PDF_TEXT_COMPONENTS, "missing_pdf_text_backend",
+        )
+    has_binary = _capability(
+        caps, f"bin_{binary}", lambda: shutil.which(binary) is not None
+    )
+    if has_fitz or has_binary:
+        return RequirementResult("pdf", True, "ok")
+    return RequirementResult(
+        engine="pdf",
+        available=False,
+        code=code,
+        ocr_extra="pdf",
+        component_type="binary-or-python-package",
+        missing_components=components,
+        components_relation="any",
+    )
+
+
+def probe_pdf_requirements(caps: Any | None = None) -> RequirementResult:
+    """Inspect PDF render and text-layer requirements without imports.
+
+    Rendering needs Poppler's ``pdftoppm`` or PyMuPDF; text-layer extraction
+    needs Poppler's ``pdftotext`` or PyMuPDF. Either alternative satisfies each
+    need, so results use ``components_relation="any"``. When both needs are
+    unmet, the render result is returned first. Like
+    ``probe_engine_requirements()``, this performs discovery only: no imports,
+    no subprocess execution, and no mutation.
+    """
+    render = _probe_pdf_need(caps, "render")
+    if not render.available:
+        return render
+    return _probe_pdf_need(caps, "text")
+
+
+def _requirement_exit_code(result: RequirementResult) -> int:
+    if result.component_type in {"configuration", "engine"}:
+        return EXIT_BAD_ARGS
+    return EXIT_MISSING_BINARY
+
+
+def _requirement_message(result: RequirementResult) -> str:
+    component = result.missing_component or "unknown"
+    components = result.missing_components or (component,)
+    if result.code == "unsupported_engine":
+        return f"Unsupported OCR engine: {component}"
+    if result.component_type == "configuration":
+        cli_flag = component.replace("_", "-")
+        return f"{component} is required for engine={result.engine} (CLI: --{cli_flag})."
+    if result.component_type == "binary":
+        return f"Required binary '{component}' was not found. {ENGINE_SETUP_GUIDANCE}"
+    extra = (
+        f" Install package extra 'pro-ledin-ocr[{result.ocr_extra}]'."
+        if result.ocr_extra else ""
+    )
+    note = f" {result.first_run_note}" if result.first_run_note else ""
+    quoted = ", ".join(f"'{item}'" for item in components)
+    if result.components_relation == "any":
+        return (
+            f"Requires any one of {quoted}; none was found.{extra} "
+            f"{ENGINE_SETUP_GUIDANCE}{note}"
+        )
+    if len(components) > 1:
+        return (
+            f"Required Python components {quoted} were not found.{extra} "
+            f"{ENGINE_SETUP_GUIDANCE}{note}"
+        )
+    runtime = " runtime" if result.component_type == "python-runtime" else " package"
+    return (
+        f"Required Python{runtime} '{component}' was not found.{extra} "
+        f"{ENGINE_SETUP_GUIDANCE}{note}"
+    )
+
+
+def _raise_requirement(result: RequirementResult) -> None:
+    if not result.available:
+        raise OcrRequirementError(result)
 
 
 # ── capability detection ──────────────────────────────────────────────────────
@@ -114,15 +586,23 @@ SMALL_WIDTH_THRESHOLD = 1400  # px — upscale if narrower
 class Caps:
     """Detect available binaries and Python libraries once at startup."""
 
-    def __init__(self, verbose: bool = False):
+    def __init__(self, verbose: bool = False, *, report: bool | None = None):
         self.verbose = verbose
-        self.has_pytesseract = self._try_import("pytesseract")
-        self.has_fitz = self._try_import("fitz")          # PyMuPDF
-        self.has_cv2 = self._try_import("cv2")            # opencv-python
-        self.has_numpy = self._try_import("numpy")
-        self.has_easyocr = self._try_import("easyocr")
-        self.has_openai = self._try_import("openai")
-        self.has_pil = self._try_import("PIL")             # Pillow
+        # Detection is spec-based for every optional dependency so `Caps` and
+        # `probe_engine_requirements()` agree; import failures are converted to
+        # structured errors at the actual import sites.
+        self.has_pytesseract = _module_available("pytesseract")
+        self.has_fitz = _module_available("fitz")          # PyMuPDF
+        self.has_cv2 = _module_available("cv2")            # opencv-python
+        self.has_numpy = _module_available("numpy")
+        self.has_easyocr = _module_available("easyocr")
+        self.has_openai = _module_available("openai")
+        self.has_pil = _module_available("PIL")            # Pillow
+        self.has_paddleocr = _module_available("paddleocr")
+        self.has_paddle = _module_available("paddle")
+        self.has_paddlex_ocr = all(
+            _module_available(module) for module in PADDLEX_OCR_MODULES
+        )
 
         self.bin_pdftoppm = shutil.which("pdftoppm")
         self.bin_pdftotext = shutil.which("pdftotext")
@@ -132,15 +612,10 @@ class Caps:
         self.bin_tesseract = shutil.which("tesseract")
         self.bin_ocrmypdf = shutil.which("ocrmypdf")
 
-        if verbose:
+        # The capability dump is a CLI diagnostic; library callers opt in
+        # explicitly so `verbose` progress logging alone stays quiet.
+        if report:
             self._report()
-
-    def _try_import(self, name: str) -> bool:
-        try:
-            __import__(name)
-            return True
-        except ImportError:
-            return False
 
     def _report(self):
         lines = ["[caps] Available capabilities:"]
@@ -148,38 +623,29 @@ class Caps:
             if attr.startswith("has_") or attr.startswith("bin_"):
                 status = "OK" if val else "MISSING"
                 lines.append(f"  {attr:<20} {status}  ({val if val and attr.startswith('bin_') else ''})")
-        print("\n".join(lines), file=sys.stderr)
+        print("\n".join(lines), file=sys.stderr, flush=True)
 
     def require_render(self):
-        if not self.bin_pdftoppm and not self.has_fitz:
-            _fatal("Cannot render PDF pages: neither pdftoppm nor PyMuPDF (fitz) is available.\n"
-                   "Install: brew install poppler  OR  uv run --with pymupdf python3 ocr.py ...",
-                   EXIT_MISSING_BINARY)
+        _raise_requirement(_probe_pdf_need(self, "render"))
 
     def require_ocr(self):
-        if not self.bin_tesseract:
-            _fatal("tesseract binary not found.\n"
-                   "Install: brew install tesseract tesseract-lang  (macOS)\n"
-                   "         sudo apt install tesseract-ocr tesseract-ocr-all  (Ubuntu)",
-                   EXIT_MISSING_BINARY)
+        _raise_requirement(probe_engine_requirements("tesseract", caps=self))
 
     def require_paddleocr(self):
-        # Detect only when the paddleocr engine is actually selected — the import
-        # is heavy, so it is never attempted at startup.
-        try:
-            __import__("paddleocr")
-        except ImportError:
-            _fatal("paddleocr not installed.\n"
-                   "Install: uv run --with paddleocr,paddlepaddle python3 ocr.py ... "
-                   "--engine paddleocr\n"
-                   "Note: first run downloads OCR models.",
-                   EXIT_MISSING_BINARY)
+        _raise_requirement(probe_engine_requirements("paddleocr", caps=self))
+
+    def require_paddleocr_vl(
+        self, server_url: str, model: str
+    ) -> None:
+        _raise_requirement(probe_engine_requirements(
+            "paddleocr-vl-mlx",
+            paddle_vl_server_url=server_url,
+            paddle_vl_model=model,
+            caps=self,
+        ))
 
     def require_pdftotext(self):
-        if not self.bin_pdftotext and not self.has_fitz:
-            _fatal("Cannot extract text layer: neither pdftotext nor PyMuPDF is available.\n"
-                   "Install: brew install poppler  OR  uv run --with pymupdf python3 ocr.py ...",
-                   EXIT_MISSING_BINARY)
+        _raise_requirement(_probe_pdf_need(self, "text"))
 
 
 # ── utilities ─────────────────────────────────────────────────────────────────
@@ -197,7 +663,7 @@ def _fatal(msg: str, code: int = EXIT_BAD_ARGS) -> NoReturn:
 
 def _log(msg: str, verbose: bool) -> None:
     if verbose:
-        print(f"[ocr] {msg}", file=sys.stderr)
+        print(f"[ocr] {msg}", file=sys.stderr, flush=True)
 
 
 def _nonspace_byte_count(text: str) -> int:
@@ -247,15 +713,15 @@ def _sha1_key(
     preprocess: str,
     lang: str,
     page_selection: str,
-    vision_context: str = "",
+    engine_context: str = "",
 ) -> str:
     stat = os.stat(path)
     raw = (
         f"{os.path.abspath(path)}|{stat.st_mtime}|{stat.st_size}|{engine}|{dpi}|"
-        f"{preprocess}|{lang}|pages={page_selection}"
+        f"{preprocess}|{lang}|pages={page_selection}|schema={OCR_OUTPUT_SCHEMA_VERSION}"
     )
-    if vision_context:
-        raw += f"|vision={vision_context}"
+    if engine_context:
+        raw += f"|engine_context={engine_context}"
     return hashlib.sha1(raw.encode()).hexdigest()
 
 
@@ -377,15 +843,15 @@ def probe_pdf(path: str, caps: Caps, verbose: bool = False) -> dict[str, Any]:
     per_page_chars: list[int] = []
 
     if caps.has_fitz:
-        import fitz
-
-        doc = fitz.open(path)
-        pages = len(doc)
-        encrypted = bool(doc.needs_pass)
-        if not encrypted:
-            for page in doc:
-                per_page_chars.append(_nonspace_byte_count(page.get_text()))
-        doc.close()
+        fitz = _fitz_or_fallback(caps, "text")
+        if fitz is not None:
+            doc = fitz.open(path)
+            pages = len(doc)
+            encrypted = bool(doc.needs_pass)
+            if not encrypted:
+                for page in doc:
+                    per_page_chars.append(_nonspace_byte_count(page.get_text()))
+            doc.close()
 
     if caps.bin_pdfinfo:
         try:
@@ -473,13 +939,14 @@ def probe_pdf(path: str, caps: Caps, verbose: bool = False) -> dict[str, Any]:
 def extract_text_layer(path: str, pages: list[int] | None, caps: Caps) -> list[str]:
     """Extract embedded text from a PDF that has a real text layer."""
     if caps.has_fitz:
-        return _extract_fitz(path, pages)
+        fitz = _fitz_or_fallback(caps, "text")
+        if fitz is not None:
+            return _extract_fitz(path, pages, fitz)
     caps.require_pdftotext()
     return _extract_pdftotext(path, pages, caps)
 
 
-def _extract_fitz(path: str, pages: list[int] | None) -> list[str]:
-    import fitz
+def _extract_fitz(path: str, pages: list[int] | None, fitz: Any) -> list[str]:
     doc = fitz.open(path)
     result = []
     for i, page in enumerate(doc):
@@ -508,6 +975,7 @@ def auto_dpi(path: str, caps: Caps) -> int:
     try:
         if caps.has_fitz:
             import fitz
+
             doc = fitz.open(path)
             rect = doc[0].rect
             width_pt = rect.width
@@ -539,14 +1007,15 @@ def render_pages(path: str, dpi: int, pages: list[int] | None,
     Uses PyMuPDF if available, else pdftoppm.
     """
     if caps.has_fitz:
-        return _render_fitz(path, dpi, pages, tmpdir, verbose)
+        fitz = _fitz_or_fallback(caps, "render")
+        if fitz is not None:
+            return _render_fitz(path, dpi, pages, tmpdir, verbose, fitz)
     caps.require_render()
     return _render_pdftoppm(path, dpi, pages, tmpdir, caps, verbose)
 
 
 def _render_fitz(path: str, dpi: int, pages: list[int] | None,
-                 tmpdir: str, verbose: bool) -> list[tuple[int, str]]:
-    import fitz
+                 tmpdir: str, verbose: bool, fitz: Any) -> list[tuple[int, str]]:
     doc = fitz.open(path)
     results = []
     mat = fitz.Matrix(dpi / 72, dpi / 72)
@@ -656,7 +1125,14 @@ def preprocess(img_path: str, level: str, caps: Caps, tmpdir: str,
 
 
 def _preprocess_basic(img_path: str, out_path: str, verbose: bool) -> str:
-    from PIL import Image, ImageEnhance, ImageFilter
+    try:
+        from PIL import Image, ImageEnhance, ImageFilter
+    except (ImportError, OSError) as exc:
+        _log(
+            f"Pillow import failed ({type(exc).__name__}) — skipping preprocessing",
+            verbose,
+        )
+        return img_path
     img = Image.open(img_path).convert("RGB")
     w, h = img.size
     if w < SMALL_WIDTH_THRESHOLD:
@@ -670,9 +1146,18 @@ def _preprocess_basic(img_path: str, out_path: str, verbose: bool) -> str:
 
 
 def _preprocess_opencv(img_path: str, out_path: str, level: str, verbose: bool) -> str:
-    import cv2
-    import numpy as np
-    from PIL import Image
+    try:
+        import cv2
+        import numpy as np
+        from PIL import Image
+    except (ImportError, OSError) as exc:
+        component = getattr(exc, "name", "") or type(exc).__name__
+        _log(
+            f"enhanced preprocessing dependency {component!r} failed to load — "
+            "falling back to basic preprocessing",
+            verbose,
+        )
+        return _preprocess_basic(img_path, out_path, verbose)
 
     img = Image.open(img_path).convert("RGB")
     w, h = img.size
@@ -688,7 +1173,7 @@ def _preprocess_opencv(img_path: str, out_path: str, level: str, verbose: bool) 
 
     # Deskew for 'full'
     if level == "full":
-        denoised = _deskew(denoised, verbose)
+        denoised = _deskew(denoised, verbose, cv2, np)
 
     # Adaptive threshold
     thresh = cv2.adaptiveThreshold(
@@ -701,9 +1186,7 @@ def _preprocess_opencv(img_path: str, out_path: str, level: str, verbose: bool) 
     return out_path
 
 
-def _deskew(gray: Any, verbose: bool) -> Any:
-    import cv2
-    import numpy as np
+def _deskew(gray: Any, verbose: bool, cv2: Any, np: Any) -> Any:
     inv = cv2.bitwise_not(gray)
     _, binary = cv2.threshold(inv, 50, 255, cv2.THRESH_BINARY)
     coords = np.column_stack(np.where(binary > 0))
@@ -752,13 +1235,23 @@ def ocr_tesseract(img_path: str, lang: str, psm: int,
     caps.require_ocr()
 
     if caps.has_pytesseract:
-        return _ocr_pytesseract(img_path, lang, psm, verbose)
+        try:
+            import pytesseract
+        except (ImportError, OSError) as exc:
+            _log(
+                f"pytesseract import failed ({type(exc).__name__}) — "
+                "falling back to tesseract CLI",
+                verbose,
+            )
+        else:
+            return _ocr_pytesseract(
+                img_path, lang, psm, verbose, pytesseract
+            )
     return _ocr_tesseract_cli(img_path, lang, psm, caps, verbose)
 
 
 def _ocr_pytesseract(img_path: str, lang: str, psm: int,
-                     verbose: bool) -> tuple[str, float, list[dict]]:
-    import pytesseract
+                     verbose: bool, pytesseract: Any) -> tuple[str, float, list[dict]]:
     config = f"--oem 3 --psm {psm}"
     _log(f"pytesseract lang={lang} config={config}", verbose)
 
@@ -862,12 +1355,13 @@ def _ocr_tesseract_cli(img_path: str, lang: str, psm: int,
 
 
 def ocr_easyocr(img_path: str, caps: Caps, verbose: bool = False) -> tuple[str, float, list[dict]]:
-    if not caps.has_easyocr:
-        _fatal("easyocr not installed. Run: uv run --with easyocr python3 ocr.py ...\n"
-               "Note: first run downloads ~2 GB of models.", EXIT_MISSING_BINARY)
-    import easyocr
-    import numpy as np
-    from PIL import Image
+    _raise_requirement(probe_engine_requirements("easyocr", caps=caps))
+    with _engine_import(_easyocr_import_requirement):
+        import easyocr
+    with _engine_import(_easyocr_dependency_requirement("numpy")):
+        import numpy as np
+    with _engine_import(_easyocr_dependency_requirement("pillow")):
+        from PIL import Image
     _log("loading easyocr reader (ru+en)...", verbose)
     reader = easyocr.Reader(["ru", "en"], gpu=False)
     img = Image.open(img_path).convert("RGB")
@@ -898,6 +1392,7 @@ def ocr_easyocr(img_path: str, caps: Caps, verbose: bool = False) -> tuple[str, 
 # ── PaddleOCR (opt-in, 3.x) ──────────────────────────────────────────────────
 
 _PADDLE_CACHE: dict[str, Any] = {}
+_PADDLE_VL_CACHE: dict[tuple[str, str], Any] = {}
 
 
 def resolve_paddle_lang(lang: str) -> str:
@@ -961,7 +1456,8 @@ def ocr_paddleocr(img_path: str, lang: str, caps: Caps,
                   verbose: bool = False) -> tuple[str, float, list[dict]]:
     """Run PaddleOCR 3.x. Returns (text, mean_conf, words)."""
     caps.require_paddleocr()
-    from paddleocr import PaddleOCR
+    with _engine_import(_paddle_import_requirement):
+        from paddleocr import PaddleOCR
 
     paddle_lang = resolve_paddle_lang(lang)
     engine = _PADDLE_CACHE.get(paddle_lang)
@@ -974,6 +1470,90 @@ def ocr_paddleocr(img_path: str, lang: str, caps: Caps,
     text, mean_conf, words = _parse_paddle_result(result)
     _log(f"paddleocr: {len(words)} lines, mean_conf={mean_conf:.1f}", verbose)
     return text, mean_conf, words
+
+
+def _extract_paddle_vl_markdown(result: Any) -> str:
+    parts: list[str] = []
+    for item in result:
+        # PaddleX result objects subclass dict but expose rendered Markdown via
+        # a property, not a top-level "markdown" mapping key.
+        markdown_data = getattr(item, "markdown", None)
+        if markdown_data is None and isinstance(item, dict):
+            markdown_data = item.get("markdown")
+        try:
+            markdown_text = markdown_data["markdown_texts"]
+        except (KeyError, TypeError):
+            markdown_text = ""
+        if isinstance(markdown_text, (list, tuple)):
+            markdown_text = "\n".join(str(part) for part in markdown_text)
+        normalized = str(markdown_text).strip()
+        if normalized:
+            parts.append(normalized)
+    return "\n\n".join(parts)
+
+
+def markdown_to_text(markdown: str) -> str:
+    """Produce a conservative plain-text view without altering native Markdown."""
+    lines: list[str] = []
+    for raw_line in markdown.splitlines():
+        line = raw_line.strip()
+        if re.fullmatch(r"\|?[\s:|-]+\|?", line) and "-" in line:
+            continue
+        if line.startswith("|") and line.endswith("|"):
+            cells = [cell.strip() for cell in line.strip("|").split("|")]
+            line = "\t".join(cells)
+        line = re.sub(r"^#{1,6}\s+", "", line)
+        line = re.sub(r"!?\[([^\]]*)\]\([^)]*\)", r"\1", line)
+        line = re.sub(r"[*_`~]", "", line)
+        lines.append(line)
+    return general_cleanup("\n".join(lines))
+
+
+def ocr_paddleocr_vl_mlx(
+    img_path: str,
+    server_url: str,
+    model: str,
+    caps: Caps,
+    verbose: bool = False,
+) -> tuple[str, str]:
+    """Run full PaddleOCR-VL parsing with only its VLM stage served by MLX."""
+    caps.require_paddleocr_vl(server_url, model)
+    with _engine_import(_paddle_vl_import_requirement):
+        from paddleocr import PaddleOCRVL
+
+    key = (server_url.rstrip("/") + "/", model)
+    engine = _PADDLE_VL_CACHE.get(key)
+    if engine is None:
+        _log(f"loading PaddleOCR-VL pipeline (model={model})...", verbose)
+        try:
+            engine = PaddleOCRVL(
+                vl_rec_backend="mlx-vlm-server",
+                vl_rec_server_url=key[0],
+                vl_rec_max_concurrency=1,
+                vl_rec_api_model_name=model,
+                # Medical transcription must not silently drop headers,
+                # footers, footnotes, or page-number blocks.
+                markdown_ignore_labels=[],
+            )
+        except Exception as exc:
+            raise OcrError(f"paddleocr-vl-mlx initialization failed: {exc}") from exc
+        _PADDLE_VL_CACHE[key] = engine
+
+    markdown = ""
+    for attempt in range(2):
+        try:
+            result = engine.predict(img_path, temperature=0)
+            markdown = _extract_paddle_vl_markdown(result)
+        except Exception as exc:
+            raise OcrError(f"paddleocr-vl-mlx request failed: {exc}") from exc
+        if markdown:
+            break
+        if attempt == 0:
+            _log("paddleocr-vl-mlx returned empty Markdown; retrying once", verbose)
+    if not markdown:
+        raise OcrError("paddleocr-vl-mlx returned empty Markdown")
+    _log(f"paddleocr-vl-mlx: {len(markdown)} Markdown chars", verbose)
+    return markdown, markdown_to_text(markdown)
 
 
 def resolve_vision_prompt(vision_prompt: str = "") -> str:
@@ -1006,7 +1586,7 @@ def vision_handoff(
     for pnum, png_path in img_paths:
         lines.append(f"  Page {pnum}: {png_path}")
     manifest = "\n".join(lines)
-    print(manifest, file=sys.stderr)
+    print(manifest, file=sys.stderr, flush=True)
     return manifest
 
 
@@ -1058,9 +1638,13 @@ def _encode_page_b64(img_path: str, verbose: bool = False) -> tuple[str, str]:
         return base64.b64encode(raw).decode(), _detect_media_type(raw)
     try:
         from PIL import Image
-    except ImportError:
-        _fatal("Pillow required to downscale an oversized page image for vision.\n"
-               "Install: uv run --with pillow,openai python3 ocr.py ...", EXIT_MISSING_BINARY)
+    except (ImportError, OSError):
+        _fatal(
+            "Pillow is required to downscale an oversized vision page image. "
+            "Install package 'Pillow' alongside 'pro-ledin-ocr[vision]'. "
+            + ENGINE_SETUP_GUIDANCE,
+            EXIT_MISSING_BINARY,
+        )
     img = Image.open(io.BytesIO(raw)).convert("RGB")
 
     def encode_jpeg(im) -> bytes:
@@ -1102,11 +1686,13 @@ def vision_ocr(
     """
     key, model, endpoint = resolve_vision_config(vision_api_key, vision_model, vision_api_url)
     prompt = resolve_vision_prompt(vision_prompt)
-    try:
+    with _engine_import(_unavailable_requirement(
+        "vision",
+        vision_api_key=vision_api_key,
+        vision_model=vision_model,
+        has_openai=False,
+    )):
         from openai import OpenAI
-    except ImportError:
-        _fatal("openai package not installed. Run: uv run --with openai python3 ocr.py ...",
-               EXIT_MISSING_BINARY)
 
     client_kwargs: dict[str, Any] = {"api_key": key, "base_url": endpoint}
     if timeout is not None:
@@ -1200,14 +1786,25 @@ def looks_tabular(words: list[dict]) -> bool:
     return table_rows >= 3
 
 
+def quality_issues(confidence: float | None, words: list[dict], min_conf: float) -> list[str]:
+    issues: list[str] = []
+    if confidence is not None and confidence < min_conf:
+        issues.append("low_confidence")
+    if looks_tabular(words):
+        issues.append("table_like_unstructured")
+    return issues
+
+
 # ── output formatters ─────────────────────────────────────────────────────────
 
 def to_markdown(pages_data: list[dict], filename: str) -> str:
     parts = [f"# {filename}", ""]
     for page in pages_data:
-        parts.append(f"## Page {page['n']}")
-        parts.append("")
-        parts.append(page.get("text", "").strip())
+        body = page.get("markdown") or page.get("text", "")
+        if page.get("n") != 0:
+            parts.append(f"## Page {page['n']}")
+            parts.append("")
+        parts.append(str(body).strip())
         parts.append("")
     return "\n".join(parts)
 
@@ -1222,7 +1819,12 @@ def to_text(pages_data: list[dict]) -> str:
 
 
 def to_json(pages_data: list[dict], meta: dict) -> str:
-    low_conf = [p["n"] for p in pages_data if p.get("mean_conf", 100) < meta.get("min_conf", 60)]
+    low_conf = [
+        p["n"]
+        for p in pages_data
+        if p.get("mean_conf") is not None
+        and p["mean_conf"] < meta.get("min_conf", 60)
+    ]
     vision_recs = [p["n"] for p in pages_data if p.get("flag") == "review-vision"]
     out = {
         "file": meta.get("file", ""),
@@ -1316,7 +1918,7 @@ class RecognizeOptions:
     vision_model: str = ""
     # Seconds for the vision HTTP request (openai SDK client timeout).
     # None keeps the SDK default. Not used by local engines (tesseract,
-    # easyocr, paddleocr): once ocr.py is called as a library rather than run
+    # easyocr, paddleocr) or the PaddleOCR-VL MLX client: once ocr.py is called as a library rather than run
     # as a CLI subprocess, there is no external process to kill, and a
     # generic in-process wall-clock timeout cannot forcibly cancel a running
     # local OCR call — only a real network request can be cancelled cleanly.
@@ -1325,6 +1927,8 @@ class RecognizeOptions:
     vision_prompt: str = ""
     auto_escalate: tuple[str, ...] = ()
     skip_ocr: bool = False
+    paddle_vl_server_url: str = ""
+    paddle_vl_model: str = ""
 
 
 def _process_file_once(
@@ -1381,6 +1985,7 @@ def _process_file_once(
             "mean_conf": None,
             "flag": None,
             "text": "",
+            "issues": [],
             "words": [],
             "skipped": True,
             "skip_reason": "input requires OCR and --skip-ocr is enabled",
@@ -1392,12 +1997,17 @@ def _process_file_once(
         if page_range is not None
         else "all"
     )
-    vision_context = ""
+    engine_context = ""
     if options.engine == "vision":
-        vision_context = json.dumps({
+        engine_context = json.dumps({
             "model": options.vision_model.strip(),
             "prompt": resolve_vision_prompt(options.vision_prompt),
             "url": options.vision_api_url.strip(),
+        }, ensure_ascii=False, sort_keys=True)
+    elif options.engine == "paddleocr-vl-mlx":
+        engine_context = json.dumps({
+            "model": options.paddle_vl_model.strip(),
+            "url": options.paddle_vl_server_url.strip(),
         }, ensure_ascii=False, sort_keys=True)
     cache_key = _sha1_key(
         path,
@@ -1406,7 +2016,7 @@ def _process_file_once(
         pp_level,
         options.lang,
         page_selection,
-        vision_context,
+        engine_context,
     )
     if not options.force and cache.get(cache_key):
         _log(f"cache hit for {path}", verbose)
@@ -1430,6 +2040,7 @@ def _process_file_once(
                 "mean_conf": 100.0,
                 "flag": None,
                 "text": cleaned,
+                "issues": [],
                 "words": [],
             })
         cache.set(cache_key, {"pages": pages_data})
@@ -1453,7 +2064,8 @@ def _process_file_once(
             verbose=verbose,
         )
         pages_data.append({"n": 0, "source": "vision", "mean_conf": None,
-                            "flag": None, "text": combined_md, "words": []})
+                            "flag": None, "text": combined_md,
+                            "markdown": combined_md, "issues": [], "words": []})
         cache.set(cache_key, {"pages": pages_data})
         return pages_data
 
@@ -1468,13 +2080,12 @@ def _process_file_once(
             pp_path = preprocess(img_path, pp_level, caps, tmpdir, verbose)
             text, conf, words = ocr_easyocr(pp_path, caps, verbose)
             cleaned = general_cleanup(text) if not options.no_cleanup else text
-            flag = None
-            if conf < options.min_conf or looks_tabular(words):
-                flag = "review-vision"
+            issues = quality_issues(conf, words, options.min_conf)
+            flag = "review-vision" if issues else None
             pages_data.append({
                 "n": pnum, "source": "easyocr",
                 "mean_conf": round(conf, 1), "flag": flag,
-                "text": cleaned, "words": words,
+                "text": cleaned, "issues": issues, "words": words,
             })
         cache.set(cache_key, {"pages": pages_data})
         return pages_data
@@ -1497,13 +2108,40 @@ def _process_file_once(
             pp_path = preprocess(img_path, pp_level, caps, tmpdir, verbose)
             text, conf, words = ocr_paddleocr(pp_path, lang, caps, verbose)
             cleaned = general_cleanup(text) if not options.no_cleanup else text
-            flag = None
-            if conf < options.min_conf or looks_tabular(words):
-                flag = "review-vision"
+            issues = quality_issues(conf, words, options.min_conf)
+            flag = "review-vision" if issues else None
             pages_data.append({
                 "n": pnum, "source": "paddleocr",
                 "mean_conf": round(conf, 1), "flag": flag,
-                "text": cleaned, "words": words,
+                "text": cleaned, "issues": issues, "words": words,
+            })
+        cache.set(cache_key, {"pages": pages_data})
+        return pages_data
+
+    # Full document parsing with PaddleOCR-VL and an MLX-served VLM stage.
+    if options.engine == "paddleocr-vl-mlx":
+        _require_engine("paddleocr-vl-mlx", caps, options)
+        if input_type == "pdf":
+            rendered = render_pages(path, dpi, page_range, tmpdir, caps, verbose)
+        else:
+            rendered = [(1, path)]
+        for pnum, img_path in rendered:
+            markdown, text = ocr_paddleocr_vl_mlx(
+                img_path,
+                options.paddle_vl_server_url,
+                options.paddle_vl_model,
+                caps,
+                verbose,
+            )
+            pages_data.append({
+                "n": pnum,
+                "source": "paddleocr-vl-mlx",
+                "mean_conf": None,
+                "flag": None,
+                "text": text,
+                "markdown": markdown,
+                "issues": [],
+                "words": [],
             })
         cache.set(cache_key, {"pages": pages_data})
         return pages_data
@@ -1533,14 +2171,13 @@ def _process_file_once(
         cleaned = general_cleanup(text) if not options.no_cleanup else text
 
         # Determine flag
-        flag = None
-        if conf < options.min_conf or looks_tabular(words):
-            flag = "review-vision"
+        issues = quality_issues(conf, words, options.min_conf)
+        flag = "review-vision" if issues else None
 
         pages_data.append({
             "n": pnum, "source": "tesseract",
             "mean_conf": round(conf, 1), "flag": flag,
-            "text": cleaned, "words": words,
+            "text": cleaned, "issues": issues, "words": words,
             "elapsed_s": round(elapsed, 2),
         })
         _log(f"page {pnum}: {len(words)} words, conf={conf:.1f}, {elapsed:.1f}s"
@@ -1551,29 +2188,14 @@ def _process_file_once(
 
 
 def _require_engine(engine: str, caps: Caps, options: RecognizeOptions) -> None:
-    if engine == "tesseract":
-        caps.require_ocr()
-    elif engine == "easyocr":
-        if not caps.has_easyocr:
-            _fatal(
-                "easyocr not installed. Install pro-ledin-ocr[easyocr].",
-                EXIT_MISSING_BINARY,
-            )
-    elif engine == "paddleocr":
-        caps.require_paddleocr()
-    elif engine == "vision":
-        if not caps.has_openai:
-            _fatal(
-                "openai package not installed. Install pro-ledin-ocr[vision].",
-                EXIT_MISSING_BINARY,
-            )
-        resolve_vision_config(
-            options.vision_api_key,
-            options.vision_model,
-            options.vision_api_url,
-        )
-    else:
-        _fatal(f"Unsupported OCR engine: {engine}", EXIT_BAD_ARGS)
+    _raise_requirement(probe_engine_requirements(
+        engine,
+        vision_api_key=options.vision_api_key,
+        vision_model=options.vision_model,
+        paddle_vl_server_url=options.paddle_vl_server_url,
+        paddle_vl_model=options.paddle_vl_model,
+        caps=caps,
+    ))
 
 
 def _workflow_cache_key(path: str, options: RecognizeOptions) -> str:
@@ -1595,6 +2217,9 @@ def _workflow_cache_key(path: str, options: RecognizeOptions) -> str:
         "vision_url": options.vision_api_url,
         "vision_model": options.vision_model,
         "vision_prompt": resolve_vision_prompt(options.vision_prompt),
+        "paddle_vl_server_url": options.paddle_vl_server_url,
+        "paddle_vl_model": options.paddle_vl_model,
+        "output_schema": OCR_OUTPUT_SCHEMA_VERSION,
     }
     return hashlib.sha1(
         json.dumps(config, ensure_ascii=False, sort_keys=True).encode()
@@ -1602,12 +2227,11 @@ def _workflow_cache_key(path: str, options: RecognizeOptions) -> str:
 
 
 def _flag_reasons(page: dict, min_conf: float) -> list[str]:
-    reasons = []
-    confidence = page.get("mean_conf")
-    if confidence is not None and confidence < min_conf:
-        reasons.append("low_confidence")
-    if looks_tabular(page.get("words", [])):
-        reasons.append("table_like")
+    reasons = list(page.get("issues", []))
+    if not reasons:
+        reasons = quality_issues(
+            page.get("mean_conf"), page.get("words", []), min_conf
+        )
     return reasons or ([str(page["flag"])] if page.get("flag") else [])
 
 
@@ -1629,7 +2253,7 @@ def process_file(
         if not initial_probe["needs_ocr"]:
             return _process_file_once(path, options, caps, cache, tmpdir)
 
-    for engine in options.auto_escalate:
+    for engine in (options.engine, *options.auto_escalate):
         _require_engine(engine, caps, options)
 
     workflow_key = _workflow_cache_key(path, options)
@@ -1675,7 +2299,9 @@ def process_file(
             if not candidate_pages:
                 _fatal(f"Escalation engine {engine} returned no result")
             candidate = candidate_pages[0]
-            if not candidate.get("text", "").strip() and not candidate.get("words"):
+            if (not candidate.get("text", "").strip()
+                    and not candidate.get("markdown", "").strip()
+                    and not candidate.get("words")):
                 _fatal(f"Escalation engine {engine} returned an empty result")
             candidate["n"] = page_number
             attempts.append({
@@ -1683,7 +2309,7 @@ def process_file(
                 "status": "completed",
                 "mean_conf": candidate.get("mean_conf"),
             })
-            if engine == "vision":
+            if engine in {"vision", "paddleocr-vl-mlx"}:
                 selected = candidate
             else:
                 score = (
@@ -1720,12 +2346,17 @@ def recognize(
     Manages a throwaway temp directory for rendered pages and cleans it up
     before returning. Each returned page dict has: n, source, mean_conf,
         flag, text, words (engine=vision instead returns a single combined
-    page whose `text` holds the whole document's Markdown). Format the
+    page whose `text` holds the whole document's Markdown). Structured engines
+    may also return native `markdown` and normalized `issues`. Format the
     result with `to_markdown()`, `to_text()`, or `to_json()`.
+
+    `options.verbose` enables progress logging only. The capability dump stays
+    a CLI diagnostic; pass `caps=Caps(report=True)` to opt into it.
 
     Raises:
         OcrError: unsupported input type, missing required binaries/packages,
             or a vision configuration/request failure.
+        OcrRequirementError: a selected engine or PDF backend is unavailable.
     """
     options = options or RecognizeOptions()
     caps = caps or Caps(verbose=options.verbose)

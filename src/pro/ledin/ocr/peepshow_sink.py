@@ -24,7 +24,7 @@ from .core import (
     to_text,
 )
 
-ENGINE_CHOICES = ("tesseract", "easyocr", "paddleocr", "vision")
+ENGINE_CHOICES = ("tesseract", "easyocr", "paddleocr", "paddleocr-vl-mlx", "vision")
 PREPROCESS_CHOICES = ("none", "basic", "enhanced", "full", "auto")
 EXIT_RUNTIME = 5
 
@@ -50,6 +50,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--vision-api-url")
     parser.add_argument("--vision-api-key")
     parser.add_argument("--vision-model")
+    parser.add_argument("--paddle-vl-server-url")
+    parser.add_argument("--paddle-vl-model")
     parser.add_argument("--timeout", type=float)
     prompt_group = parser.add_mutually_exclusive_group()
     prompt_group.add_argument("--vision-prompt")
@@ -162,6 +164,13 @@ def resolve_config(
         ),
         vision_model=_configured(
             args, "vision_model", env, "PEEPSHOW_SINK_OCR_VISION_MODEL", ""
+        ),
+        paddle_vl_server_url=_configured(
+            args, "paddle_vl_server_url", env,
+            "PEEPSHOW_SINK_OCR_PADDLE_VL_SERVER_URL", ""
+        ),
+        paddle_vl_model=_configured(
+            args, "paddle_vl_model", env, "PEEPSHOW_SINK_OCR_PADDLE_VL_MODEL", ""
         ),
         vision_prompt=vision_prompt,
         timeout=timeout,

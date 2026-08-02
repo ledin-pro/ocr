@@ -2,6 +2,7 @@
 """Unit tests for pro.ledin.ocr pure helpers. Run: python3 -m pytest tests"""
 
 import base64
+import builtins
 import io
 import os
 import sys
@@ -62,6 +63,104 @@ class ParsePaddleResult(unittest.TestCase):
         self.assertEqual(text, "")
         self.assertEqual(mean_conf, 0.0)
         self.assertEqual(words, [])
+
+
+class PaddleOCRVLMarkdown(unittest.TestCase):
+    def test_extracts_native_markdown(self):
+        item = types.SimpleNamespace(markdown={
+            "markdown_texts": "| Eye | SPH |\n| --- | --- |\n| OD | +2.50 |",
+            "markdown_images": {},
+        })
+        self.assertEqual(
+            ocr._extract_paddle_vl_markdown([item]),
+            "| Eye | SPH |\n| --- | --- |\n| OD | +2.50 |",
+        )
+
+    def test_extracts_from_paddlex_dict_subclass_property(self):
+        class FakeResult(dict):
+            @property
+            def markdown(self):
+                return {"markdown_texts": "<table><tr><td>A</td></tr></table>"}
+
+        self.assertEqual(
+            ocr._extract_paddle_vl_markdown([FakeResult(res={})]),
+            "<table><tr><td>A</td></tr></table>",
+        )
+
+    def test_to_markdown_prefers_native_structure(self):
+        pages = [{
+            "n": 1,
+            "source": "paddleocr-vl-mlx",
+            "text": "Eye\tSPH\nOD\t+2.50",
+            "markdown": "| Eye | SPH |\n| --- | --- |\n| OD | +2.50 |",
+            "mean_conf": None,
+            "flag": None,
+            "issues": [],
+            "words": [],
+        }]
+        rendered = ocr.to_markdown(pages, "table.png")
+        self.assertIn("| --- | --- |", rendered)
+        self.assertNotIn("Eye\tSPH", rendered)
+
+    def test_markdown_to_text_keeps_cells_without_separator_row(self):
+        text = ocr.markdown_to_text(
+            "## Prescription\n\n| Eye | SPH |\n| --- | --- |\n| OD | +2.50 |"
+        )
+        self.assertEqual(text, "Prescription\n\nEye\tSPH\nOD\t+2.50")
+
+    def test_full_pipeline_uses_mlx_only_as_vlm_backend(self):
+        captured = {}
+
+        class FakePipeline:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+            def predict(self, path, **kwargs):
+                captured["path"] = path
+                captured["predict"] = kwargs
+                return [types.SimpleNamespace(markdown={
+                    "markdown_texts": "| A | B |\n| --- | --- |\n| 1 | 2 |"
+                })]
+
+        fake_module = types.ModuleType("paddleocr")
+        fake_module.PaddleOCRVL = FakePipeline
+        ocr._PADDLE_VL_CACHE.clear()
+        with mock.patch.dict(sys.modules, {"paddleocr": fake_module}):
+            markdown, text = ocr.ocr_paddleocr_vl_mlx(
+                "page.png",
+                "http://127.0.0.1:8111/",
+                "PaddlePaddle/PaddleOCR-VL-1.6",
+                fake_caps(),
+            )
+        self.assertEqual(captured["vl_rec_backend"], "mlx-vlm-server")
+        self.assertEqual(captured["vl_rec_max_concurrency"], 1)
+        self.assertEqual(captured["markdown_ignore_labels"], [])
+        self.assertEqual(captured["predict"]["temperature"], 0)
+        self.assertIn("| --- | --- |", markdown)
+        self.assertIn("A\tB", text)
+
+    def test_empty_lazy_load_response_is_retried_once(self):
+        calls = 0
+
+        class FakePipeline:
+            def __init__(self, **kwargs):
+                pass
+
+            def predict(self, path, **kwargs):
+                nonlocal calls
+                calls += 1
+                text = "" if calls == 1 else "| A |\n| --- |\n| 1 |"
+                return [types.SimpleNamespace(markdown={"markdown_texts": text})]
+
+        fake_module = types.ModuleType("paddleocr")
+        fake_module.PaddleOCRVL = FakePipeline
+        ocr._PADDLE_VL_CACHE.clear()
+        with mock.patch.dict(sys.modules, {"paddleocr": fake_module}):
+            markdown, _ = ocr.ocr_paddleocr_vl_mlx(
+                "page.png", "http://127.0.0.1:8111/", "model", fake_caps()
+            )
+        self.assertEqual(calls, 2)
+        self.assertIn("| 1 |", markdown)
 
 
 class ResolveVisionConfig(unittest.TestCase):
@@ -156,6 +255,621 @@ class FatalRaisesOcrError(unittest.TestCase):
         with self.assertRaises(ocr.OcrError) as ctx:
             ocr._fatal("boom")
         self.assertEqual(ctx.exception.code, ocr.EXIT_BAD_ARGS)
+
+
+class EngineRequirementProbe(unittest.TestCase):
+    def caps(self, **overrides):
+        values = {
+            "bin_tesseract": "tesseract",
+            "has_easyocr": True,
+            "has_paddleocr": True,
+            "has_paddle": True,
+            "has_paddlex_ocr": True,
+            "has_openai": True,
+        }
+        values.update(overrides)
+        return types.SimpleNamespace(**values)
+
+    def test_tesseract_missing_binary_is_structured(self):
+        result = ocr.probe_engine_requirements(
+            "tesseract", caps=self.caps(bin_tesseract=None)
+        )
+        self.assertEqual(result.code, "missing_tesseract_binary")
+        self.assertEqual(result.missing_component, "tesseract")
+        self.assertEqual(result.missing_components, ("tesseract",))
+        self.assertEqual(result.component_type, "binary")
+        self.assertIsNone(result.ocr_extra)
+
+    def test_easyocr_result_includes_extra_and_first_run_note(self):
+        result = ocr.probe_engine_requirements(
+            "easyocr", caps=self.caps(has_easyocr=False)
+        )
+        self.assertEqual(result.code, "missing_easyocr_package")
+        self.assertEqual(result.missing_components, ("easyocr",))
+        self.assertEqual(result.ocr_extra, "easyocr")
+        self.assertEqual(result.component_type, "python-package")
+        self.assertIn("model", result.first_run_note.lower())
+
+    def test_paddle_package_and_runtime_are_distinct(self):
+        package = ocr.probe_engine_requirements(
+            "paddleocr", caps=self.caps(has_paddleocr=False)
+        )
+        runtime = ocr.probe_engine_requirements(
+            "paddleocr", caps=self.caps(has_paddle=False)
+        )
+        self.assertEqual(package.code, "missing_paddleocr_package")
+        self.assertEqual(package.missing_component, "paddleocr")
+        self.assertEqual(package.missing_components, ("paddleocr",))
+        self.assertEqual(runtime.code, "missing_paddle_runtime")
+        self.assertEqual(runtime.missing_component, "paddle")
+        self.assertEqual(runtime.missing_components, ("paddle",))
+        self.assertEqual(runtime.component_type, "python-runtime")
+
+    def test_paddle_reports_package_and_runtime_together(self):
+        result = ocr.probe_engine_requirements(
+            "paddleocr",
+            caps=self.caps(has_paddleocr=False, has_paddle=False),
+        )
+        self.assertEqual(result.code, "missing_paddleocr_package")
+        self.assertEqual(result.missing_component, "paddleocr")
+        self.assertEqual(
+            result.missing_components,
+            ("paddleocr", "paddle"),
+        )
+        self.assertEqual(
+            result.to_dict()["missing_components"],
+            ("paddleocr", "paddle"),
+        )
+
+    def test_paddle_vl_requires_loopback_server_and_model(self):
+        missing_url = ocr.probe_engine_requirements(
+            "paddleocr-vl-mlx",
+            paddle_vl_model="PaddlePaddle/PaddleOCR-VL-1.6",
+            caps=self.caps(),
+        )
+        unsafe_url = ocr.probe_engine_requirements(
+            "paddleocr-vl-mlx",
+            paddle_vl_server_url="https://example.com/v1",
+            paddle_vl_model="PaddlePaddle/PaddleOCR-VL-1.6",
+            caps=self.caps(),
+        )
+        missing_model = ocr.probe_engine_requirements(
+            "paddleocr-vl-mlx",
+            paddle_vl_server_url="http://localhost:8111/",
+            caps=self.caps(),
+        )
+        ready = ocr.probe_engine_requirements(
+            "paddleocr-vl-mlx",
+            paddle_vl_server_url="http://127.0.0.1:8111/",
+            paddle_vl_model="PaddlePaddle/PaddleOCR-VL-1.6",
+            caps=self.caps(),
+        )
+        self.assertEqual(missing_url.code, "missing_paddle_vl_server_url")
+        self.assertEqual(unsafe_url.code, "unsafe_paddle_vl_server_url")
+        self.assertEqual(missing_model.code, "missing_paddle_vl_model")
+        self.assertTrue(ready.available)
+
+    def test_paddle_vl_requires_doc_parser_package_and_runtime(self):
+        result = ocr.probe_engine_requirements(
+            "paddleocr-vl-mlx",
+            paddle_vl_server_url="http://localhost:8111/",
+            paddle_vl_model="model",
+            caps=self.caps(has_paddleocr=False, has_paddle=False),
+        )
+        self.assertEqual(result.code, "missing_paddleocr_doc_parser")
+        self.assertEqual(result.ocr_extra, "paddle-vl")
+        self.assertEqual(result.missing_components, ("paddleocr", "paddle"))
+
+        missing_extra = ocr.probe_engine_requirements(
+            "paddleocr-vl-mlx",
+            paddle_vl_server_url="http://localhost:8111/",
+            paddle_vl_model="model",
+            caps=self.caps(has_paddlex_ocr=False),
+        )
+        self.assertEqual(missing_extra.code, "missing_paddleocr_doc_parser")
+        self.assertEqual(missing_extra.missing_component, "paddleocr[doc-parser]")
+
+    def test_vision_checks_package_then_explicit_config(self):
+        package = ocr.probe_engine_requirements(
+            "vision", vision_api_key="k", vision_model="m",
+            caps=self.caps(has_openai=False),
+        )
+        key = ocr.probe_engine_requirements(
+            "vision", vision_model="m", caps=self.caps()
+        )
+        model = ocr.probe_engine_requirements(
+            "vision", vision_api_key="k", caps=self.caps()
+        )
+        ready = ocr.probe_engine_requirements(
+            "vision", vision_api_key="k", vision_model="m", caps=self.caps()
+        )
+        self.assertEqual(package.code, "missing_openai_package")
+        self.assertEqual(package.missing_components, ("openai",))
+        self.assertEqual(key.code, "missing_vision_api_key")
+        self.assertEqual(key.missing_components, ("vision_api_key",))
+        self.assertEqual(model.code, "missing_vision_model")
+        self.assertEqual(model.missing_components, ("vision_model",))
+        self.assertEqual(ready.code, "ok")
+        self.assertEqual(ready.missing_components, ())
+        self.assertTrue(ready.available)
+
+    def test_probe_does_not_import_engine_packages(self):
+        with (mock.patch.object(ocr.importlib.util, "find_spec", return_value=None),
+              mock.patch.object(ocr.shutil, "which", return_value=None),
+              mock.patch("builtins.__import__", side_effect=AssertionError("imported"))):
+            result = ocr.probe_engine_requirements("easyocr")
+        self.assertEqual(result.code, "missing_easyocr_package")
+
+    def test_requirement_error_exposes_result_fields(self):
+        options = ocr.RecognizeOptions(engine="vision", vision_model="m")
+        with self.assertRaises(ocr.OcrRequirementError) as context:
+            ocr._require_engine("vision", self.caps(), options)
+        error = context.exception
+        self.assertEqual(error.code, ocr.EXIT_BAD_ARGS)
+        self.assertEqual(error.requirement_code, "missing_vision_api_key")
+        self.assertEqual(error.engine, "vision")
+        self.assertEqual(error.missing_component, "vision_api_key")
+        self.assertEqual(error.missing_components, ("vision_api_key",))
+        self.assertEqual(error.ocr_extra, "vision")
+        self.assertEqual(error.component_type, "configuration")
+        self.assertEqual(error.result.to_dict()["code"], error.requirement_code)
+
+    def test_missing_package_message_uses_distribution_extra_not_ocr_py(self):
+        options = ocr.RecognizeOptions(engine="easyocr")
+        with self.assertRaises(ocr.OcrRequirementError) as context:
+            ocr._require_engine(
+                "easyocr", self.caps(has_easyocr=False), options
+            )
+        message = str(context.exception)
+        self.assertIn("pro-ledin-ocr[easyocr]", message)
+        self.assertNotIn("ocr.py", message)
+
+    def test_multi_component_error_names_every_missing_paddle_module(self):
+        options = ocr.RecognizeOptions(engine="paddleocr")
+        with self.assertRaises(ocr.OcrRequirementError) as context:
+            ocr._require_engine(
+                "paddleocr",
+                self.caps(has_paddleocr=False, has_paddle=False),
+                options,
+            )
+        error = context.exception
+        self.assertEqual(
+            error.missing_components,
+            ("paddleocr", "paddle"),
+        )
+        self.assertIn("'paddleocr'", str(error))
+        self.assertIn("'paddle'", str(error))
+
+    def test_unsupported_engine_is_structured_bad_args(self):
+        result = ocr.probe_engine_requirements("unknown", caps=self.caps())
+        self.assertEqual(result.code, "unsupported_engine")
+        with self.assertRaises(ocr.OcrRequirementError) as context:
+            ocr._raise_requirement(result)
+        self.assertEqual(context.exception.code, ocr.EXIT_BAD_ARGS)
+
+    def test_public_package_exports_probe_types(self):
+        from pro.ledin import ocr as public_ocr
+
+        self.assertIs(public_ocr.RequirementResult, ocr.RequirementResult)
+        self.assertIs(public_ocr.OcrRequirementError, ocr.OcrRequirementError)
+        self.assertIs(public_ocr.probe_engine_requirements, ocr.probe_engine_requirements)
+
+    def _stderr_visible_to_reader(self, emit) -> str:
+        """Return what a concurrent reader sees on a buffered stderr."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "stderr.log")
+            with open(path, "w", encoding="utf-8") as stream:
+                with mock.patch.object(ocr.sys, "stderr", stream):
+                    emit()
+                with open(path, encoding="utf-8") as reader:
+                    return reader.read()
+
+    def test_verbose_progress_reaches_stderr_before_process_exit(self):
+        observed = self._stderr_visible_to_reader(
+            lambda: ocr._log("checking", True)
+        )
+        self.assertIn("checking", observed)
+
+    def test_vision_handoff_manifest_reaches_stderr_before_process_exit(self):
+        observed = self._stderr_visible_to_reader(
+            lambda: ocr.vision_handoff([(1, "/tmp/page_0001.png")])
+        )
+        self.assertIn("/tmp/page_0001.png", observed)
+
+
+def fake_caps(**overrides):
+    """Build a real `Caps` instance (with its require_* methods) without
+    running hardware/dependency detection."""
+    caps = object.__new__(ocr.Caps)
+    defaults = {
+        "verbose": False,
+        "bin_tesseract": "tesseract",
+        "bin_pdftoppm": "/usr/bin/pdftoppm",
+        "bin_pdftotext": "/usr/bin/pdftotext",
+        "bin_pdfinfo": None,
+        "bin_pdffonts": None,
+        "bin_pdfimages": None,
+        "bin_ocrmypdf": None,
+        "has_pytesseract": False,
+        "has_fitz": False,
+        "has_cv2": False,
+        "has_numpy": False,
+        "has_pil": False,
+        "has_easyocr": True,
+        "has_openai": True,
+        "has_paddleocr": True,
+        "has_paddle": True,
+        "has_paddlex_ocr": True,
+    }
+    defaults.update(overrides)
+    for name, value in defaults.items():
+        setattr(caps, name, value)
+    return caps
+
+
+def broken_import(name: str, error: BaseException):
+    """Patch imports so `name` resolves by spec but fails on import."""
+    real_import = builtins.__import__
+
+    def fake_import(module_name, *args, **kwargs):
+        if module_name.split(".", 1)[0] == name:
+            raise error
+        return real_import(module_name, *args, **kwargs)
+
+    return mock.patch.object(builtins, "__import__", side_effect=fake_import)
+
+
+def broken_imports(errors: dict[str, BaseException]):
+    """Patch several import roots with independent failures."""
+    real_import = builtins.__import__
+
+    def fake_import(module_name, *args, **kwargs):
+        root = module_name.split(".", 1)[0]
+        if root in errors:
+            raise errors[root]
+        return real_import(module_name, *args, **kwargs)
+
+    return mock.patch.object(builtins, "__import__", side_effect=fake_import)
+
+
+class BrokenEngineInstall(unittest.TestCase):
+    """A module can exist by spec yet still fail to import (broken build,
+    namespace shell, failed native load). Those must stay inside the documented
+    OcrError contract instead of escaping as a raw ImportError."""
+
+    def caps(self, **overrides):
+        return fake_caps(**overrides)
+
+    def _broken_module(self, name: str, error: BaseException):
+        return broken_import(name, error), None
+
+    def test_broken_easyocr_import_raises_structured_requirement_error(self):
+        patcher, _ = self._broken_module("easyocr", ImportError("bad build", name="easyocr"))
+        with patcher:
+            with self.assertRaises(ocr.OcrRequirementError) as context:
+                ocr.ocr_easyocr("page.png", self.caps(), False)
+        error = context.exception
+        self.assertIsInstance(error, ocr.OcrError)
+        self.assertEqual(error.requirement_code, "missing_easyocr_package")
+        self.assertEqual(error.missing_components, ("easyocr",))
+        self.assertEqual(error.component_type, "python-package")
+        self.assertEqual(error.ocr_extra, "easyocr")
+
+    def test_broken_paddleocr_import_is_attributed_to_package(self):
+        patcher, _ = self._broken_module(
+            "paddleocr", ImportError("bad build", name="paddleocr")
+        )
+        with patcher:
+            with self.assertRaises(ocr.OcrRequirementError) as context:
+                ocr.ocr_paddleocr("page.png", "eng", self.caps(), False)
+        error = context.exception
+        self.assertEqual(error.requirement_code, "missing_paddleocr_package")
+        self.assertEqual(error.missing_components, ("paddleocr",))
+        self.assertEqual(error.ocr_extra, "paddle")
+
+    def test_failed_paddle_runtime_load_is_attributed_to_runtime(self):
+        patcher, _ = self._broken_module(
+            "paddleocr", ImportError("libpaddle.so missing", name="paddle")
+        )
+        with patcher:
+            with self.assertRaises(ocr.OcrRequirementError) as context:
+                ocr.ocr_paddleocr("page.png", "eng", self.caps(), False)
+        error = context.exception
+        self.assertEqual(error.requirement_code, "missing_paddle_runtime")
+        self.assertEqual(error.missing_components, ("paddle",))
+        self.assertEqual(error.component_type, "python-runtime")
+
+    def test_native_load_failure_is_converted_not_leaked(self):
+        patcher, _ = self._broken_module(
+            "easyocr", OSError("cannot load shared object")
+        )
+        with patcher:
+            with self.assertRaises(ocr.OcrRequirementError) as context:
+                ocr.ocr_easyocr("page.png", self.caps(), False)
+        self.assertEqual(
+            context.exception.requirement_code, "missing_easyocr_package"
+        )
+
+    def test_broken_openai_import_raises_structured_requirement_error(self):
+        patcher, _ = self._broken_module("openai", ImportError("bad build", name="openai"))
+        with patcher:
+            with self.assertRaises(ocr.OcrRequirementError) as context:
+                ocr.vision_ocr(
+                    [(1, "page.png")], vision_api_key="k", vision_model="m"
+                )
+        error = context.exception
+        self.assertEqual(error.requirement_code, "missing_openai_package")
+        self.assertEqual(error.missing_components, ("openai",))
+        self.assertEqual(error.ocr_extra, "vision")
+
+    def test_broken_pymupdf_falls_back_to_poppler(self):
+        caps = self.caps(has_fitz=True, bin_pdftoppm="/usr/bin/pdftoppm")
+        patcher, _ = self._broken_module("fitz", ImportError("bad build", name="fitz"))
+        with patcher:
+            with mock.patch.object(
+                ocr, "_render_pdftoppm", return_value=[(1, "page-0001.png")]
+            ) as fallback:
+                rendered = ocr.render_pages("scan.pdf", 300, None, "/tmp", caps, False)
+        self.assertEqual(rendered, [(1, "page-0001.png")])
+        fallback.assert_called_once()
+
+    def test_broken_pymupdf_without_poppler_raises_structured_error(self):
+        caps = self.caps(has_fitz=True, bin_pdftoppm=None, bin_pdftotext=None)
+        patcher, _ = self._broken_module("fitz", ImportError("bad build", name="fitz"))
+        with patcher:
+            with self.assertRaises(ocr.OcrRequirementError) as context:
+                ocr.render_pages("scan.pdf", 300, None, "/tmp", caps, False)
+        error = context.exception
+        self.assertEqual(error.requirement_code, "missing_pdf_render_backend")
+        self.assertEqual(error.missing_components, ("pdftoppm", "pymupdf"))
+
+    def test_easyocr_transitive_import_failure_names_dependency(self):
+        fake_easyocr = types.ModuleType("easyocr")
+        for failure in (
+            ImportError("numpy missing", name="numpy"),
+            OSError("numpy native extension failed"),
+        ):
+            with self.subTest(failure=type(failure).__name__):
+                with mock.patch.dict(sys.modules, {"easyocr": fake_easyocr}):
+                    with broken_import("numpy", failure):
+                        with self.assertRaises(ocr.OcrRequirementError) as context:
+                            ocr.ocr_easyocr("page.png", self.caps(), False)
+                error = context.exception
+                self.assertEqual(
+                    error.requirement_code, "missing_easyocr_dependency"
+                )
+                self.assertEqual(error.engine, "easyocr")
+                self.assertEqual(error.missing_components, ("numpy",))
+                self.assertEqual(error.component_type, "python-package")
+                self.assertEqual(error.ocr_extra, "easyocr")
+
+    def test_easyocr_pillow_failure_names_dependency(self):
+        fake_easyocr = types.ModuleType("easyocr")
+        fake_numpy = types.ModuleType("numpy")
+        with mock.patch.dict(
+            sys.modules, {"easyocr": fake_easyocr, "numpy": fake_numpy}
+        ):
+            with broken_import("PIL", OSError("Pillow native load failed")):
+                with self.assertRaises(ocr.OcrRequirementError) as context:
+                    ocr.ocr_easyocr("page.png", self.caps(), False)
+        error = context.exception
+        self.assertEqual(error.requirement_code, "missing_easyocr_dependency")
+        self.assertEqual(error.missing_components, ("pillow",))
+        self.assertEqual(error.ocr_extra, "easyocr")
+
+    def test_easyocr_import_attributes_known_transitive_module(self):
+        with broken_import(
+            "easyocr", ImportError("torch missing", name="torch")
+        ):
+            with self.assertRaises(ocr.OcrRequirementError) as context:
+                ocr.ocr_easyocr("page.png", self.caps(), False)
+        self.assertEqual(
+            context.exception.requirement_code, "missing_easyocr_dependency"
+        )
+        self.assertEqual(context.exception.missing_components, ("torch",))
+
+
+class OptionalImportFallbacks(unittest.TestCase):
+    def _stderr_from(self, emit) -> str:
+        stream = io.StringIO()
+        with mock.patch.object(sys, "stderr", stream):
+            emit()
+        return stream.getvalue()
+
+    def test_broken_pytesseract_falls_back_to_cli(self):
+        sentinel = ("cli text", 88.0, [])
+        for failure in (
+            ImportError("bad install", name="pytesseract"),
+            OSError("native dependency failed"),
+        ):
+            with self.subTest(failure=type(failure).__name__):
+                caps = fake_caps(has_pytesseract=True)
+                with broken_import("pytesseract", failure):
+                    with mock.patch.object(
+                        ocr, "_ocr_tesseract_cli", return_value=sentinel
+                    ):
+                        stream = io.StringIO()
+                        with mock.patch.object(sys, "stderr", stream):
+                            result = ocr.ocr_tesseract(
+                                "page.png", "eng", 3, caps, True
+                            )
+                self.assertEqual(result, sentinel)
+                self.assertIn("falling back to tesseract CLI", stream.getvalue())
+
+    def test_broken_pillow_basic_returns_original_path(self):
+        for failure in (
+            ImportError("Pillow missing", name="PIL"),
+            OSError("Pillow native load failed"),
+        ):
+            with self.subTest(failure=type(failure).__name__):
+                stream = io.StringIO()
+                with broken_import("PIL", failure):
+                    with mock.patch.object(sys, "stderr", stream):
+                        result = ocr._preprocess_basic(
+                            "page.png", "processed.png", True
+                        )
+                self.assertEqual(result, "page.png")
+                self.assertIn("skipping preprocessing", stream.getvalue())
+
+    def test_enhanced_falls_through_basic_to_original(self):
+        failures = {
+            "cv2": ImportError("OpenCV missing", name="cv2"),
+            "PIL": OSError("Pillow native load failed"),
+        }
+        stream = io.StringIO()
+        with broken_imports(failures):
+            with mock.patch.object(sys, "stderr", stream):
+                result = ocr._preprocess_opencv(
+                    "page.png", "processed.png", "enhanced", True
+                )
+        self.assertEqual(result, "page.png")
+        output = stream.getvalue()
+        self.assertIn("falling back to basic preprocessing", output)
+        self.assertIn("skipping preprocessing", output)
+
+    def test_numpy_native_failure_falls_back_to_basic(self):
+        fake_cv2 = types.ModuleType("cv2")
+        stream = io.StringIO()
+        with mock.patch.dict(sys.modules, {"cv2": fake_cv2}):
+            with broken_import("numpy", OSError("NumPy native load failed")):
+                with mock.patch.object(
+                    ocr, "_preprocess_basic", return_value="basic.png"
+                ):
+                    with mock.patch.object(sys, "stderr", stream):
+                        result = ocr._preprocess_opencv(
+                            "page.png", "processed.png", "full", True
+                        )
+        self.assertEqual(result, "basic.png")
+        self.assertIn("falling back to basic preprocessing", stream.getvalue())
+
+    def test_cli_contains_broken_easyocr_import_without_traceback(self):
+        real_module_available = ocr._module_available
+
+        def module_available(name):
+            return True if name == "easyocr" else real_module_available(name)
+
+        with tempfile.NamedTemporaryFile(suffix=".png") as source:
+            stderr = io.StringIO()
+            with mock.patch.object(ocr, "_module_available", side_effect=module_available):
+                with broken_import(
+                    "easyocr", ImportError("broken package", name="easyocr")
+                ):
+                    with mock.patch.object(sys, "stderr", stderr):
+                        code = ocr_cli.main([
+                            source.name,
+                            "--engine", "easyocr",
+                            "--preprocess", "none",
+                            "--lang", "eng",
+                            "--format", "txt",
+                        ])
+        output = stderr.getvalue()
+        self.assertEqual(code, ocr.EXIT_MISSING_BINARY)
+        self.assertIn("[ocr] ERROR:", output)
+        self.assertNotIn("Traceback", output)
+
+
+class PdfRequirementProbe(unittest.TestCase):
+    def test_satisfied_by_poppler_only(self):
+        result = ocr.probe_pdf_requirements(caps={
+            "has_fitz": False,
+            "bin_pdftoppm": "/usr/bin/pdftoppm",
+            "bin_pdftotext": "/usr/bin/pdftotext",
+        })
+        self.assertTrue(result.available)
+        self.assertEqual(result.code, "ok")
+        self.assertEqual(result.missing_components, ())
+
+    def test_satisfied_by_pymupdf_only(self):
+        result = ocr.probe_pdf_requirements(caps={
+            "has_fitz": True,
+            "bin_pdftoppm": None,
+            "bin_pdftotext": None,
+        })
+        self.assertTrue(result.available)
+        self.assertEqual(result.code, "ok")
+
+    def test_missing_render_backend(self):
+        result = ocr.probe_pdf_requirements(caps={
+            "has_fitz": False,
+            "bin_pdftoppm": None,
+            "bin_pdftotext": "/usr/bin/pdftotext",
+        })
+        self.assertFalse(result.available)
+        self.assertEqual(result.code, "missing_pdf_render_backend")
+        self.assertEqual(result.missing_components, ("pdftoppm", "pymupdf"))
+        self.assertEqual(result.missing_component, "pdftoppm")
+        self.assertEqual(result.components_relation, "any")
+        self.assertEqual(result.ocr_extra, "pdf")
+        self.assertEqual(result.component_type, "binary-or-python-package")
+
+    def test_missing_text_backend(self):
+        result = ocr.probe_pdf_requirements(caps={
+            "has_fitz": False,
+            "bin_pdftoppm": "/usr/bin/pdftoppm",
+            "bin_pdftotext": None,
+        })
+        self.assertEqual(result.code, "missing_pdf_text_backend")
+        self.assertEqual(result.missing_components, ("pdftotext", "pymupdf"))
+
+    def test_caps_require_helpers_raise_structured_error(self):
+        caps = fake_caps(has_fitz=False, bin_pdftoppm=None, bin_pdftotext=None)
+        with self.assertRaises(ocr.OcrRequirementError) as render:
+            caps.require_render()
+        with self.assertRaises(ocr.OcrRequirementError) as text:
+            caps.require_pdftotext()
+        self.assertEqual(render.exception.requirement_code, "missing_pdf_render_backend")
+        self.assertEqual(text.exception.requirement_code, "missing_pdf_text_backend")
+        self.assertEqual(render.exception.code, ocr.EXIT_MISSING_BINARY)
+        self.assertIn("pymupdf", str(render.exception))
+
+    def test_probe_is_exported_publicly(self):
+        from pro.ledin import ocr as public_ocr
+
+        self.assertIs(public_ocr.probe_pdf_requirements, ocr.probe_pdf_requirements)
+
+
+class CapabilityReporting(unittest.TestCase):
+    def _stderr_from(self, emit) -> str:
+        stream = io.StringIO()
+        with mock.patch.object(sys, "stderr", stream):
+            emit()
+        return stream.getvalue()
+
+    def test_recognize_with_verbose_does_not_dump_capabilities(self):
+        options = ocr.RecognizeOptions(skip_ocr=True, verbose=True)
+        with tempfile.NamedTemporaryFile(suffix=".png") as source:
+            output = self._stderr_from(
+                lambda: ocr.recognize(source.name, options)
+            )
+        self.assertNotIn("[caps]", output)
+
+    def test_recognize_still_emits_verbose_progress(self):
+        options = ocr.RecognizeOptions(
+            engine="vision",
+            dpi=150,
+            preprocess="none",
+            verbose=True,
+            vision_api_key="k",
+            vision_model="m",
+        )
+        caps = fake_caps(has_openai=True)
+        cache = ocr.Cache(None)
+        with tempfile.NamedTemporaryFile(suffix=".png") as source:
+            with mock.patch.object(ocr, "vision_ocr", return_value="text"):
+                ocr.recognize(source.name, options, caps=caps, cache=cache)
+                # Second run hits the cache and logs progress from recognize()
+                # itself rather than from a mocked engine call.
+                output = self._stderr_from(
+                    lambda: ocr.recognize(
+                        source.name, options, caps=caps, cache=cache
+                    )
+                )
+        self.assertIn("[ocr]", output)
+        self.assertNotIn("[caps]", output)
+
+    def test_caps_report_is_opt_in(self):
+        self.assertNotIn("[caps]", self._stderr_from(lambda: ocr.Caps(verbose=True)))
+        self.assertIn("[caps]", self._stderr_from(lambda: ocr.Caps(report=True)))
 
 
 class TesseractCliFailures(unittest.TestCase):

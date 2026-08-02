@@ -8,12 +8,75 @@
 | 1 | `tesseract` | Clean scans, typed text | 160+ with language data | Tesseract binary |
 | 2 | `easyocr` | Handwriting, degraded scans | 80+ | `pro-ledin-ocr[easyocr]`, models |
 | 2.5 | `paddleocr` | CJK, multilingual, angled text | 100+ | `pro-ledin-ocr[paddle]`, PaddlePaddle, models |
+| 2.75 | `paddleocr-vl-mlx` | Tables and document layout on Apple Silicon | Model-supported | `pro-ledin-ocr[paddle-vl]`, loopback MLX-VLM service |
 | 3 | `vision` | Tables, charts, forms, complex layout | Any model-supported language | `pro-ledin-ocr[vision]`, key, model |
 | Handoff | `python -m pro.ledin.ocr.vision_handoff` | Current multimodal agent reads selected pages | Model-dependent | Image-capable agent |
 
 Engine resolution: `--engine` > `OCR_ENGINE` > `tesseract`. Valid values are
-`tesseract`, `easyocr`, `paddleocr`, and `vision`. There is no `auto` value.
+`tesseract`, `easyocr`, `paddleocr`, `paddleocr-vl-mlx`, and `vision`. There is no `auto` value.
 Automated OpenAI-compatible extraction uses `vision`; former alias is removed.
+
+## Requirement probe
+
+`ocr.probe_engine_requirements(engine, *, vision_api_key="",
+vision_model="")` checks one selected engine without importing OCR packages or
+triggering model/network work. It returns `RequirementResult`; recognition uses
+same probe and raises `OcrRequirementError` for unavailable requirements.
+
+| Stable code | Missing component | Extra | Component type |
+|---|---|---|---|
+| `missing_tesseract_binary` | `tesseract` | none | `binary` |
+| `missing_easyocr_package` | `easyocr` | `easyocr` | `python-package` |
+| `missing_easyocr_dependency` | detected transitive module | `easyocr` | `python-package` |
+| `missing_paddleocr_package` | `paddleocr` | `paddle` | `python-package` |
+| `missing_paddle_runtime` | `paddle` | `paddle` | `python-runtime` |
+| `missing_paddleocr_doc_parser` | `paddleocr` and/or `paddle` | `paddle-vl` | `python-package` |
+| `missing_paddle_vl_server_url` | `paddle_vl_server_url` | `paddle-vl` | `configuration` |
+| `unsafe_paddle_vl_server_url` | `paddle_vl_server_url` | `paddle-vl` | `configuration` |
+| `missing_paddle_vl_model` | `paddle_vl_model` | `paddle-vl` | `configuration` |
+| `missing_openai_package` | `openai` | `vision` | `python-package` |
+| `missing_vision_api_key` | `vision_api_key` | `vision` | `configuration` |
+| `missing_vision_model` | `vision_model` | `vision` | `configuration` |
+| `unsupported_engine` | supplied engine | none | `engine` |
+| `missing_pdf_render_backend` | `pdftoppm`, `pymupdf` | `pdf` | `binary-or-python-package` |
+| `missing_pdf_text_backend` | `pdftotext`, `pymupdf` | `pdf` | `binary-or-python-package` |
+
+Successful result uses `code="ok"`. EasyOCR and PaddleOCR results include
+first-run model-download note. Probe checks OpenAI package before explicit vision
+key/model, never reads `OPENAI_API_KEY`, and returns first unmet requirement.
+`OcrRequirementError.code` remains numeric process exit code;
+`requirement_code`/`stable_code` carries table value.
+
+`ocr.probe_pdf_requirements(caps=None)` checks PDF render and text-layer needs
+with same result type. Render needs `pdftoppm` or PyMuPDF; text layer needs
+`pdftotext` or PyMuPDF. Those results set `components_relation="any"`, meaning
+one listed component satisfies requirement. Engine results use
+`components_relation="all"`. `Caps.require_render()` and
+`Caps.require_pdftotext()` raise `OcrRequirementError` built from that probe.
+
+Probe reads module specs and executable paths only. Broken installs can still
+raise at import time, so engine import sites convert `ImportError` and native
+load failures into `OcrRequirementError` carrying same stable code. A failing
+`from paddleocr import PaddleOCR` is attributed to `missing_paddle_runtime` when
+underlying `paddle` module fails, otherwise `missing_paddleocr_package`. When
+PyMuPDF is installed but broken, PDF paths fall back to Poppler where available
+and raise structured PDF codes only when no backend remains.
+
+EasyOCR imports its own package plus NumPy and Pillow. Failure of EasyOCR package
+uses `missing_easyocr_package`; a determinable transitive failure uses
+`missing_easyocr_dependency` with component such as `numpy`, `pillow`, or
+`torch`. Both retain `engine="easyocr"`, `ocr_extra="easyocr"`, and
+`component_type="python-package"`.
+
+`missing_components` is tuple containing every missing module found during one
+engine preflight. `missing_component` remains first tuple item for compatibility.
+If both Paddle modules are absent, result keeps code
+`missing_paddleocr_package`, component type `python-package`, singular
+`paddleocr`, and reports `("paddleocr", "paddle")` in plural field. If only
+runtime is absent, result reports one-item tuple `("paddle",)`; PaddlePaddle is
+the distribution providing that import module.
+Other current failures expose one-item tuples; successful result exposes empty
+tuple.
 
 ## Strict auto-escalation
 
@@ -108,6 +171,9 @@ choice unless `--dpi` is supplied.
 
 `enhanced` and `full` require OpenCV and NumPy. Adaptive threshold can damage
 clean digital text; use `basic` or `none` when output worsens.
+Import/load failures degrade safely: enhanced/full falls back to basic; basic
+returns original image if Pillow cannot load. pytesseract is optional even when
+detected by spec; failed import falls back to Tesseract CLI.
 
 ## Automated vision
 

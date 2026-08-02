@@ -3,6 +3,24 @@
 Use this reference only after selected engine or escalation dependency fails.
 Never install automatically.
 
+Library orchestrators should call `ocr.probe_engine_requirements()` first and
+branch on stable result `code`, `component_type`, and `ocr_extra`. Probe is
+diagnostic only: no package imports, installation, model download, network call,
+or environment credential lookup. `missing_components` names every absent
+module; `missing_component` remains first item for compatibility. Paddle failures
+therefore distinguish and, when needed, jointly report `paddleocr` and `paddle`
+import modules. `paddle` is provided by PaddlePaddle runtime distribution.
+EasyOCR/Paddle results include optional first-run note. `ocr.probe_pdf_requirements()`
+covers PDF render and text-layer backends and marks alternatives with
+`components_relation="any"`.
+
+Probe is spec-based, so an installed-but-broken package still fails at import.
+Those failures surface as same structured `OcrRequirementError` with same stable
+code; treat them as reinstall of reported component for detected platform.
+EasyOCR transitive failures use `missing_easyocr_dependency` and name component
+when determinable. pytesseract and preprocessing dependencies are optional and
+fall back without requiring installation.
+
 ## Approval workflow
 
 1. Detect OS and version, CPU architecture, Python version and bitness.
@@ -205,6 +223,26 @@ unverified weights.
 - [PaddlePaddle macOS pip guide](https://www.paddlepaddle.org.cn/documentation/docs/en/install/pip/macos-pip_en.html)
 - [PaddleOCR installation](https://www.paddleocr.ai/latest/en/version3.x/installation.html)
 - [PaddleOCR model list and downloads](https://www.paddleocr.ai/latest/en/version3.x/module_usage/ocr_modules/text_detection.html)
+
+### PaddleOCR-VL with MLX on Apple Silicon
+
+Follow the official sequence in an isolated environment. First validate full
+direct `PaddleOCRVL` inference on CPU using PaddlePaddle 3.2.1 or later and
+`paddleocr[doc-parser]`. Only then install `mlx-vlm>=0.3.11` and start its
+VLM-only service:
+
+```bash
+python -m pip install "pro-ledin-ocr[paddle-vl]"
+python -m pip install "mlx-vlm>=0.3.11"
+mlx_vlm.server --host 127.0.0.1 --port 8111
+```
+
+The MLX service is not an end-to-end parsing API. Never send document images to
+it directly; run the complete `PaddleOCRVL` client with backend
+`mlx-vlm-server`. Apple M1 is listed as supported Apple Silicon, but PaddleOCR
+currently reports accuracy and speed verification only on M4.
+
+- [Official PaddleOCR-VL Apple Silicon guide](https://www.paddleocr.ai/latest/en/version3.x/pipeline_usage/PaddleOCR-VL-Apple-Silicon.html#31-starting-the-vlm-inference-service)
 
 ## Automated vision
 

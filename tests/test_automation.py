@@ -142,8 +142,11 @@ class StrictEscalation(unittest.TestCase):
     def caps(self):
         return types.SimpleNamespace(
             require_ocr=lambda: None,
+            bin_tesseract="tesseract",
             has_easyocr=True,
             require_paddleocr=lambda: None,
+            has_paddleocr=True,
+            has_paddle=True,
             has_openai=True,
         )
 

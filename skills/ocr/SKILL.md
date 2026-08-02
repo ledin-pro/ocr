@@ -35,7 +35,7 @@ separate probe executable exists.
 ## Engine and escalation resolution
 
 - Baseline engine: `--engine` > `OCR_ENGINE` > `tesseract`.
-- Valid engines: `tesseract`, `easyocr`, `paddleocr`, `vision`.
+- Valid engines: `tesseract`, `easyocr`, `paddleocr`, `paddleocr-vl-mlx`, `vision`.
 - No `auto` engine exists.
 - Automated OpenAI-compatible vision engine is `vision`; former alias is
   removed.
@@ -52,6 +52,48 @@ baseline, flag reasons, attempts, and selected source under `decision`.
 Any missing dependency or engine attempt failure stops whole workflow. No later
 engine runs and no workflow result is cached. Never silently skip, reorder, or
 replace user-requested engines.
+
+For programmatic preflight, use public side-effect-free probe instead of
+importing engine packages:
+
+```python
+from pro.ledin import ocr
+
+requirement = ocr.probe_engine_requirements(
+    "paddleocr",
+    vision_api_key="",  # used only for engine="vision"
+    vision_model="",
+)
+if not requirement.available:
+    handle(requirement.to_dict())
+```
+
+`ocr.probe_pdf_requirements()` covers PDF render and text-layer backends.
+
+Result fields: `engine`, `available`, stable `code`, backward-compatible
+`missing_component`, complete `missing_components` tuple, `components_relation`,
+`ocr_extra`, `component_type`, optional `first_run_note`. Singular value is first
+tuple item. `components_relation` is `all` for required sets and `any` when one
+listed component suffices, as for PDF backends. Paddle probe reports `paddleocr`
+and `paddle` together when both modules are missing; other engine failures use
+one-item tuples. Recognition uses same probe and raises
+`ocr.OcrRequirementError` on failure. Error retains numeric `.code` for CLI
+compatibility and exposes stable code as `.requirement_code` or `.stable_code`.
+Probe performs no engine import, model download, network call, credential
+environment lookup, or mutation.
+
+Probe uses module specs, so broken installs can still fail at import time. Every
+engine import site converts that failure into same structured
+`ocr.OcrRequirementError` with same stable code; raw `ImportError` never escapes.
+EasyOCR transitive import failures use `missing_easyocr_dependency` and name
+actual component when determinable (`numpy`, `pillow`, `torch`, etc.).
+
+Optional helper failures are fallback conditions, not fatal requirements:
+
+- Broken/missing pytesseract falls back to Tesseract CLI.
+- Broken/missing Pillow during basic preprocessing returns original image.
+- Broken/missing cv2, NumPy, or Pillow during enhanced/full preprocessing falls
+  back to basic, then original image if Pillow is also unavailable.
 
 ## Workflow
 
@@ -73,7 +115,7 @@ replace user-requested engines.
    failed OCR command. If verification fails, stop and report exact failure.
 
 Do not downgrade to Tesseract when user explicitly requested EasyOCR,
-PaddleOCR, or vision. Do not remove an escalation engine to make run pass.
+PaddleOCR, PaddleOCR-VL, or vision. Do not remove an escalation engine to make run pass.
 
 ## Targeted approved reruns
 
@@ -85,6 +127,11 @@ ocr FILE --engine easyocr --pages 2,5 --format md
 
 # Flagged CJK, multilingual, or angled pages
 ocr FILE --engine paddleocr --pages 2,5 --format md
+
+# Structured local tables on Apple Silicon; MLX service is VLM-only
+ocr FILE --engine paddleocr-vl-mlx --pages 2,5 --format md \
+  --paddle-vl-server-url http://127.0.0.1:8111/ \
+  --paddle-vl-model PaddlePaddle/PaddleOCR-VL-1.6
 
 # Automated vision; endpoint URL optional, key/model required
 ocr FILE --engine vision --pages 2,5 --format md \
@@ -178,7 +225,11 @@ pages = ocr.recognize(
 markdown = ocr.to_markdown(pages, "scan.pdf")
 ```
 
-Catch `ocr.OcrError` for recoverable failures. Library never calls `sys.exit()`.
+Catch `ocr.OcrError` for recoverable failures. Catch
+`ocr.OcrRequirementError` when structured engine requirement fields matter.
+Library never calls `sys.exit()`. `verbose=True` enables progress logging only;
+capability dump stays CLI diagnostic and library callers opt in with
+`caps=ocr.Caps(report=True)`.
 `RecognizeOptions` mirrors recognition flags, including `max_pages`; this does
 not add `--max-pages` to interactive handoff module.
 

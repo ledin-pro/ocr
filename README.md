@@ -3,8 +3,8 @@
 [![skills.sh](https://skills.sh/b/ledin-pro/ocr)](https://skills.sh/ledin-pro/ocr)
 
 Layered OCR workhorse for scanned PDFs and images (PNG/JPG/TIFF/HEIC/WEBP).
-Baseline OCR uses Poppler and Tesseract; EasyOCR, PaddleOCR, and automated vision
-are opt-in engines.
+Baseline OCR uses Poppler and Tesseract; EasyOCR, PaddleOCR, structured
+PaddleOCR-VL over MLX, and automated vision are opt-in engines.
 
 - Import name: `pro.ledin.ocr`
 - Console scripts: `ocr`, `peepshow-sink-ocr`
@@ -17,6 +17,7 @@ are opt-in engines.
 pip install pro-ledin-ocr             # baseline
 pip install "pro-ledin-ocr[easyocr]" # EasyOCR
 pip install "pro-ledin-ocr[paddle]"  # PaddleOCR
+pip install "pro-ledin-ocr[paddle-vl]" # PaddleOCR-VL document parser client
 pip install "pro-ledin-ocr[vision]"  # automated OpenAI-compatible vision
 pip install "pro-ledin-ocr[all]"     # all optional Python engines/tools
 ```
@@ -45,12 +46,16 @@ ocr slides.pdf --engine vision --pages 9,12 \
   --vision-prompt "Preserve tables and empty cells"
 ocr scan.pdf --auto-escalate easyocr,vision \
   --vision-api-key "$KEY" --vision-model my-vision-model
+ocr table.pdf --engine paddleocr-vl-mlx \
+  --paddle-vl-server-url http://127.0.0.1:8111/ \
+  --paddle-vl-model PaddlePaddle/PaddleOCR-VL-1.6
 ```
 
 Engine resolution is explicit: `--engine` overrides `OCR_ENGINE`, otherwise
 `tesseract` is used. There is no `auto` engine. Valid engines are `tesseract`,
-`easyocr`, `paddleocr`, and `vision`. `vision` is automated, headless extraction
-through an OpenAI-compatible endpoint; former automated-engine alias is gone.
+`easyocr`, `paddleocr`, `paddleocr-vl-mlx`, and `vision`. The MLX engine runs
+full layout parsing inside `PaddleOCRVL`; its loopback service handles only the
+VLM stage and must not receive document images directly.
 
 `--auto-escalate` overrides `OCR_AUTO_ESCALATE`. Both accept an ordered,
 comma-separated chain such as `easyocr,vision`. OCR validates every dependency
@@ -120,6 +125,65 @@ markdown = ocr.to_markdown(pages, "scan.pdf")
 `recognize()` never calls `sys.exit()`; catch `ocr.OcrError` for recoverable
 failures such as unsupported input, missing dependencies, or vision config.
 
+Call `probe_engine_requirements()` before recognition when an orchestrator needs
+structured, side-effect-free dependency diagnostics. It does not import OCR
+engines, download models, access network, or read generic credential variables:
+
+```python
+requirement = ocr.probe_engine_requirements(
+    "vision",
+    vision_api_key="key",
+    vision_model="model",
+)
+if not requirement.available:
+    print(requirement.to_dict())
+```
+
+`probe_pdf_requirements()` covers PDF rendering and text-layer extraction:
+
+```python
+requirement = ocr.probe_pdf_requirements()
+```
+
+`RequirementResult` carries `engine`, stable `code`, backward-compatible
+`missing_component`, complete `missing_components` tuple, `components_relation`,
+`ocr_extra`, `component_type`, and optional `first_run_note`.
+`missing_component` is always first tuple item. `components_relation` is `all`
+when every listed component is required and `any` when installing one listed
+component is enough — PDF backends use `any` because Poppler or PyMuPDF
+satisfies them. Paddle preflight reports both `paddleocr` and `paddle` when both
+import modules are absent. EasyOCR, OpenAI, binary, and configuration failures
+use one-item tuples. Recognition raises `OcrRequirementError`, an `OcrError`
+subclass, with same data under `.result` and direct attributes. Existing numeric
+`.code` remains CLI exit status;
+`.requirement_code`/`.stable_code` is stable requirement code. Current codes:
+`ok`, `missing_tesseract_binary`, `missing_easyocr_package`,
+`missing_easyocr_dependency`, `missing_paddleocr_package`,
+`missing_paddle_runtime`, `missing_openai_package`,
+`missing_vision_api_key`, `missing_vision_model`, `unsupported_engine`,
+`missing_pdf_render_backend`, and `missing_pdf_text_backend`.
+
+Probes stay cheap by checking module specs rather than importing. A module can
+still exist by spec and fail to import (broken build, namespace shell, failed
+native library load), so every engine import site converts that failure into the
+same `OcrRequirementError` with the same stable code. A raw `ImportError` never
+escapes recognition.
+
+EasyOCR transitive failures use `missing_easyocr_dependency` and name the
+failing component when determinable, for example `numpy`, `pillow`, or `torch`.
+Optional local helpers degrade safely: broken pytesseract falls back to the
+Tesseract CLI; broken Pillow skips basic preprocessing; broken OpenCV, NumPy, or
+Pillow in enhanced/full preprocessing falls back to basic, then the original
+image when Pillow is also unusable.
+
+Python package failures identify distribution extra such as
+`pro-ledin-ocr[easyocr]`; platform-specific binary/runtime commands remain in
+the engine setup guide rather than assuming a source-tree `ocr.py` invocation.
+
+`RecognizeOptions(verbose=True)` enables progress logging only. The 17-line
+capability dump is a CLI diagnostic (`ocr -v`); library callers opt in with
+`ocr.recognize(path, options, caps=ocr.Caps(report=True))`.
+
 ## Engine tiers
 
 | Tier | Engine | Best for | Cost |
@@ -128,6 +192,7 @@ failures such as unsupported input, missing dependencies, or vision config.
 | 1 | tesseract (default) | Clean scans and typed text | Free |
 | 2 | easyocr | Handwriting and degraded scans | Free, heavy |
 | 2.5 | paddleocr | CJK, multilingual, angled text | Free, heavy |
+| 2.75 | paddleocr-vl-mlx | Local tables and complex document layout on Apple Silicon | Free, heavy |
 | 3 | vision | Automated tables, charts, complex layouts | API cost |
 | Handoff | `python -m pro.ledin.ocr.vision_handoff` | Interactive agent reading | Agent/model tokens |
 

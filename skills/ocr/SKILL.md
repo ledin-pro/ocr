@@ -30,7 +30,10 @@ ocr FILE --probe
 ```
 
 `--probe` prints one NDJSON object per input and exits. It is part of `ocr`; no
-separate probe executable exists.
+separate probe executable exists. Each object reports `needs_ocr`, the
+`text_layer_rejected` flag, `readability` scores, and a human-readable `reason`.
+A dense but unreadable embedded text layer (broken/`ToUnicode`-less fonts) is
+rejected and routed to OCR rather than emitting glyph soup.
 
 ## Engine and escalation resolution
 

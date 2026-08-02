@@ -65,6 +65,69 @@ class ProbeDecision(unittest.TestCase):
         self.assertEqual(result["input_type"], "image")
         self.assertTrue(result["needs_ocr"])
 
+    def test_unreadable_text_layer_is_rejected(self):
+        garbage = core.text_readability(
+            "D ! 9 *!1E (&%($*'++ & E ''$,),&% F 1E !./01# AGHE 220# 232#"
+        )
+        result = self.decide(
+            median_chars=1220,
+            total_fonts=3,
+            non_unicode_fonts=3,
+            smask_count=0,
+            readability=garbage,
+        )
+        self.assertTrue(result["needs_ocr"])
+        self.assertTrue(result["text_layer_rejected"])
+        self.assertIn("unreadable text layer", result["reason"])
+        self.assertIn("all fonts non-Unicode", result["reason"])
+
+    def test_readable_cyrillic_text_layer_is_accepted(self):
+        good = core.text_readability(
+            "Общий анализ крови. Гемоглобин 124 г/л, эритроциты 4.53, "
+            "лейкоциты 5.98. Результат исследования."
+        )
+        result = self.decide(
+            median_chars=200,
+            total_fonts=2,
+            non_unicode_fonts=0,
+            readability=good,
+        )
+        self.assertFalse(result["needs_ocr"])
+        self.assertFalse(result["text_layer_rejected"])
+
+    def test_numeric_table_text_layer_is_accepted(self):
+        numeric = core.text_readability(
+            "СОЭ 30 мм/час 0-30 Эритроциты 4.53 10*12/л 3.92-5.08 "
+            "Гемоглобин 124 г/л 119-146"
+        )
+        result = self.decide(
+            median_chars=200,
+            total_fonts=2,
+            non_unicode_fonts=0,
+            readability=numeric,
+        )
+        self.assertFalse(result["needs_ocr"])
+        self.assertFalse(result["text_layer_rejected"])
+
+    def test_missing_readability_falls_back_to_density(self):
+        result = self.decide(
+            median_chars=200,
+            total_fonts=2,
+            non_unicode_fonts=0,
+            readability=None,
+        )
+        self.assertFalse(result["needs_ocr"])
+        self.assertFalse(result["text_layer_rejected"])
+
+    def test_text_readability_scores(self):
+        garbage = core.text_readability("!@# $%^ &*( )_+ ,./ ;:'")
+        self.assertLess(garbage["letter_digit_ratio"], 0.55)
+        self.assertLess(garbage["word_score"], 0.5)
+        prose = core.text_readability("Это нормальный связный русский текст.")
+        self.assertGreaterEqual(prose["letter_digit_ratio"], 0.55)
+        self.assertGreaterEqual(prose["word_score"], 0.5)
+        self.assertEqual(core.text_readability("")["word_score"], 0.0)
+
     def test_unicode_counts_match_shell_byte_semantics(self):
         self.assertEqual(core._nonspace_byte_count("я" * 20), 40)
 

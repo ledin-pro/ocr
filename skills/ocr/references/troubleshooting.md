@@ -17,6 +17,28 @@ ocr FILE --format md,txt,json --out results/
 
 Use `ocr FILE --probe` only for triage-only NDJSON. No separate probe command.
 
+## Garbled or non-Unicode text layer accepted
+
+**Symptom:** A PDF has a dense embedded text layer, but the extracted characters
+are punctuation/symbol soup (e.g. `D ! 9 *!1E (&%($*'++`). Common for scans saved
+with fonts that lack a `ToUnicode` map.
+
+**Cause:** The text-layer probe used to trust raw character volume alone. A broken
+CMap yields many characters but no readable words.
+
+**Behavior:** The probe now scores readability of the extracted text
+(`letter_digit_ratio`, `word_score`, `replacement_ratio`). When density is high
+but readability is low, the text layer is rejected: `needs_ocr=True`,
+`text_layer_rejected=True`, and pages carry a `text_layer_rejected` issue.
+Recognition then renders pages and runs the selected engine. Absence of a
+`ToUnicode` map on every font is reported (`all fonts non-Unicode`) but is not the
+deciding signal — legitimate base-14 fonts also report no `ToUnicode` yet extract
+cleanly, so readability, not font metadata, gates the decision.
+
+**Fix:** No action needed; the correct engine runs automatically. To inspect the
+decision, run `ocr FILE --probe` and read `reason`, `text_layer_rejected`, and the
+`readability` scores in the NDJSON.
+
 ## Wrong or garbled Cyrillic
 
 **Cause:** Tesseract selected English after weak OSD result, or requested

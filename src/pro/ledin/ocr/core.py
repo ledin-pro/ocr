@@ -111,7 +111,7 @@ class OcrRequirementError(OcrError):
 
 # ── version ───────────────────────────────────────────────────────────────────
 __version__ = "0.5.1"
-OCR_OUTPUT_SCHEMA_VERSION = 2
+OCR_OUTPUT_SCHEMA_VERSION = 3
 
 
 # ── constants ─────────────────────────────────────────────────────────────────
@@ -670,6 +670,52 @@ def _nonspace_byte_count(text: str) -> int:
     return len(re.sub(r"\s+", "", text).encode("utf-8"))
 
 
+_LETTER_RE = re.compile(r"[^\W\d_]", re.UNICODE)
+_WORD_TOKEN_RE = re.compile(r"[^\s]+", re.UNICODE)
+_LETTER_RUN_RE = re.compile(r"[^\W\d_]{3,}", re.UNICODE)
+_NUMERIC_TOKEN_RE = re.compile(r"^[-+]?\d[\d.,:/%\u2013\u2014-]*$", re.UNICODE)
+
+
+def text_readability(text: str) -> dict[str, float]:
+    """Score how much extracted text looks like real language, not glyph soup.
+
+    Returns letter_digit_ratio, word_score, and replacement_ratio computed over
+    the decoded characters. A broken CMap (embedded text with no ToUnicode)
+    yields symbol/punctuation runs that score low even when the raw character
+    count is high.
+    """
+    nonspace = re.sub(r"\s+", "", text)
+    if not nonspace:
+        return {
+            "letter_digit_ratio": 0.0,
+            "word_score": 0.0,
+            "replacement_ratio": 0.0,
+        }
+
+    letters_digits = sum(
+        1 for ch in nonspace if _LETTER_RE.match(ch) or ch.isdigit()
+    )
+    replacements = sum(
+        1 for ch in nonspace if ch == "\ufffd" or (ord(ch) < 32 and ch not in "\t")
+    )
+
+    # A token counts as content when it has a run of >=3 letters (a real word)
+    # or is a bare numeric/measurement value (e.g. "4.53", "3.92-5.08", "62").
+    # This keeps dense lab tables readable while rejecting punctuation soup.
+    tokens = _WORD_TOKEN_RE.findall(text)
+    word_like = sum(
+        1
+        for token in tokens
+        if _LETTER_RUN_RE.search(token) or _NUMERIC_TOKEN_RE.match(token)
+    )
+
+    return {
+        "letter_digit_ratio": round(letters_digits / len(nonspace), 4),
+        "word_score": round(word_like / len(tokens), 4) if tokens else 0.0,
+        "replacement_ratio": round(replacements / len(nonspace), 4),
+    }
+
+
 def _run(cmd: list[str], capture: bool = True, check: bool = True) -> subprocess.CompletedProcess:
     return subprocess.run(
         cmd,
@@ -741,6 +787,9 @@ def classify_input(path: str) -> str:
 
 MIN_TEXT_CHARS = 30
 HIGH_SMASK_COUNT = 3
+MIN_LETTER_DIGIT_RATIO = 0.55
+MIN_WORD_SCORE = 0.5
+MAX_REPLACEMENT_RATIO = 0.05
 
 
 def decide_probe(signals: dict[str, Any]) -> dict[str, Any]:
@@ -750,21 +799,47 @@ def decide_probe(signals: dict[str, Any]) -> dict[str, Any]:
     total_fonts = signals.get("total_fonts")
     non_unicode_fonts = signals.get("non_unicode_fonts")
     smask_count = signals.get("smask_count")
+    readability = signals.get("readability")
 
     suspected_rasterized = bool(
         total_fonts is not None
         and (total_fonts == 0 or (non_unicode_fonts or 0) > 0)
     )
+    all_fonts_non_unicode = bool(
+        total_fonts and (non_unicode_fonts or 0) == total_fonts
+    )
     high_image_coverage = bool(
         smask_count is not None and smask_count >= HIGH_SMASK_COUNT
     )
 
+    # A text layer is trustworthy only if it is both dense enough and readable.
+    # Readability is scored when sample text is available; if scoring could not
+    # run (no text extracted), fall back to the density-only decision so we do
+    # not reject legitimate text on missing signals.
+    readable = True
+    unreadable_reason = None
+    if readability is not None:
+        letters = readability.get("letter_digit_ratio", 0.0)
+        words = readability.get("word_score", 0.0)
+        repl = readability.get("replacement_ratio", 0.0)
+        readable = (
+            letters >= MIN_LETTER_DIGIT_RATIO
+            and words >= MIN_WORD_SCORE
+            and repl <= MAX_REPLACEMENT_RATIO
+        )
+        if not readable:
+            unreadable_reason = (
+                f"unreadable text layer (letters={letters}, words={words}, "
+                f"repl={repl})"
+            )
+
+    text_layer_rejected = False
     if encrypted:
         status = "blocked"
         has_text_layer = False
         needs_ocr = False
         reason_parts = ["PDF is encrypted; decrypt it before processing"]
-    elif median >= MIN_TEXT_CHARS and not (
+    elif median >= MIN_TEXT_CHARS and readable and not (
         suspected_rasterized and high_image_coverage
     ):
         status = "ready"
@@ -775,10 +850,16 @@ def decide_probe(signals: dict[str, Any]) -> dict[str, Any]:
         status = "ready"
         has_text_layer = False
         needs_ocr = True
-        reason_parts = [
-            f"median {median} non-space chars/page (threshold: {MIN_TEXT_CHARS})"
-        ]
+        if median >= MIN_TEXT_CHARS and not readable:
+            text_layer_rejected = True
+            reason_parts = [unreadable_reason]
+        else:
+            reason_parts = [
+                f"median {median} non-space chars/page (threshold: {MIN_TEXT_CHARS})"
+            ]
 
+    if text_layer_rejected and all_fonts_non_unicode:
+        reason_parts.append("all fonts non-Unicode (no ToUnicode map)")
     if suspected_rasterized:
         if total_fonts == 0:
             reason_parts.append("no fonts found")
@@ -801,6 +882,7 @@ def decide_probe(signals: dict[str, Any]) -> dict[str, Any]:
         "status": status,
         "has_text_layer": has_text_layer,
         "needs_ocr": needs_ocr,
+        "text_layer_rejected": text_layer_rejected,
         "suspected_rasterized_text": suspected_rasterized,
         "high_image_coverage": high_image_coverage,
         "font_unicode_coverage": font_coverage,
@@ -824,6 +906,7 @@ def probe_input(path: str, caps: Caps, verbose: bool = False) -> dict[str, Any]:
             "median_chars": 0,
             "per_page_chars": [0],
             "has_text_layer": False,
+            "text_layer_rejected": False,
             "suspected_rasterized_text": False,
             "encrypted": False,
             "high_image_coverage": False,
@@ -841,6 +924,7 @@ def probe_pdf(path: str, caps: Caps, verbose: bool = False) -> dict[str, Any]:
     pages = 1
     encrypted = False
     per_page_chars: list[int] = []
+    per_page_text: list[str] = []
 
     if caps.has_fitz:
         fitz = _fitz_or_fallback(caps, "text")
@@ -850,7 +934,9 @@ def probe_pdf(path: str, caps: Caps, verbose: bool = False) -> dict[str, Any]:
             encrypted = bool(doc.needs_pass)
             if not encrypted:
                 for page in doc:
-                    per_page_chars.append(_nonspace_byte_count(page.get_text()))
+                    text = page.get_text()
+                    per_page_text.append(text)
+                    per_page_chars.append(_nonspace_byte_count(text))
             doc.close()
 
     if caps.bin_pdfinfo:
@@ -878,13 +964,28 @@ def probe_pdf(path: str, caps: Caps, verbose: bool = False) -> dict[str, Any]:
                     path,
                     "-",
                 ])
-                count = _nonspace_byte_count(result.stdout)
+                page_text = result.stdout
+                count = _nonspace_byte_count(page_text)
             except Exception:
+                page_text = ""
                 count = 0
+            per_page_text.append(page_text)
             per_page_chars.append(count)
 
     counts = sorted(per_page_chars or [0])
     median = counts[len(counts) // 2]
+
+    # Score readability on the densest sample pages so a page-1 header does not
+    # dominate; skip when no text was extracted (leaves the density-only path).
+    readability = None
+    ranked = sorted(
+        range(len(per_page_text)),
+        key=lambda i: per_page_chars[i],
+        reverse=True,
+    )
+    sample = "\n".join(per_page_text[i] for i in ranked[:3]).strip()
+    if sample:
+        readability = text_readability(sample)
 
     total_fonts = None
     non_unicode_fonts = None
@@ -929,6 +1030,7 @@ def probe_pdf(path: str, caps: Caps, verbose: bool = False) -> dict[str, Any]:
         "non_unicode_fonts": non_unicode_fonts,
         "image_count": image_count,
         "smask_count": smask_count,
+        "readability": readability,
     })
     _log(f"probe: {result['reason']}", verbose)
     return result
@@ -2043,8 +2145,7 @@ def _process_file_once(
                 "issues": [],
                 "words": [],
             })
-        cache.set(cache_key, {"pages": pages_data})
-        return pages_data
+        return _cache_and_return(cache, cache_key, pages_data, probe)
 
     # Automated vision path
     if options.engine == "vision":
@@ -2066,8 +2167,7 @@ def _process_file_once(
         pages_data.append({"n": 0, "source": "vision", "mean_conf": None,
                             "flag": None, "text": combined_md,
                             "markdown": combined_md, "issues": [], "words": []})
-        cache.set(cache_key, {"pages": pages_data})
-        return pages_data
+        return _cache_and_return(cache, cache_key, pages_data, probe)
 
     # EasyOCR path
     if options.engine == "easyocr":
@@ -2087,8 +2187,7 @@ def _process_file_once(
                 "mean_conf": round(conf, 1), "flag": flag,
                 "text": cleaned, "issues": issues, "words": words,
             })
-        cache.set(cache_key, {"pages": pages_data})
-        return pages_data
+        return _cache_and_return(cache, cache_key, pages_data, probe)
 
     # PaddleOCR path (opt-in)
     if options.engine == "paddleocr":
@@ -2115,8 +2214,7 @@ def _process_file_once(
                 "mean_conf": round(conf, 1), "flag": flag,
                 "text": cleaned, "issues": issues, "words": words,
             })
-        cache.set(cache_key, {"pages": pages_data})
-        return pages_data
+        return _cache_and_return(cache, cache_key, pages_data, probe)
 
     # Full document parsing with PaddleOCR-VL and an MLX-served VLM stage.
     if options.engine == "paddleocr-vl-mlx":
@@ -2143,8 +2241,7 @@ def _process_file_once(
                 "issues": [],
                 "words": [],
             })
-        cache.set(cache_key, {"pages": pages_data})
-        return pages_data
+        return _cache_and_return(cache, cache_key, pages_data, probe)
 
     if options.engine != "tesseract":
         _fatal(f"Unsupported OCR engine: {options.engine}", EXIT_BAD_ARGS)
@@ -2183,6 +2280,21 @@ def _process_file_once(
         _log(f"page {pnum}: {len(words)} words, conf={conf:.1f}, {elapsed:.1f}s"
              + (f" [FLAGGED: {flag}]" if flag else ""), verbose)
 
+    return _cache_and_return(cache, cache_key, pages_data, probe)
+
+
+def _cache_and_return(
+    cache: "Cache",
+    cache_key: str,
+    pages_data: list[dict],
+    probe: dict[str, Any] | None,
+) -> list[dict]:
+    """Stamp the text-layer-rejected marker, persist, and return pages."""
+    if probe and probe.get("text_layer_rejected"):
+        for page in pages_data:
+            issues = page.setdefault("issues", [])
+            if "text_layer_rejected" not in issues:
+                issues.append("text_layer_rejected")
     cache.set(cache_key, {"pages": pages_data})
     return pages_data
 

@@ -4,7 +4,7 @@
 
 | Tier | Engine | Best use | Languages | Requirement |
 |---|---|---|---|---|
-| 0 | Text layer | PDF already contains usable text | Embedded text | Poppler or PyMuPDF |
+| 0 | Text layer | PDF already contains a readable text layer | Embedded text | Poppler or PyMuPDF |
 | 1 | `tesseract` | Clean scans, typed text | 160+ with language data | Tesseract binary |
 | 2 | `easyocr` | Handwriting, degraded scans | 80+ | `pro-ledin-ocr[easyocr]`, models |
 | 2.5 | `paddleocr` | CJK, multilingual, angled text | 100+ | `pro-ledin-ocr[paddle]`, PaddlePaddle, models |
@@ -53,6 +53,23 @@ with same result type. Render needs `pdftoppm` or PyMuPDF; text layer needs
 one listed component satisfies requirement. Engine results use
 `components_relation="all"`. `Caps.require_render()` and
 `Caps.require_pdftotext()` raise `OcrRequirementError` built from that probe.
+
+## Text-layer readability gate
+
+Tier 0 is chosen only when an embedded text layer is both dense enough
+(`median >= MIN_TEXT_CHARS` non-space bytes/page) and readable. The probe scores
+extracted sample text with `ocr.text_readability(text)`, returning
+`letter_digit_ratio`, `word_score` (share of tokens that are real words or bare
+numeric/measurement values), and `replacement_ratio` (U+FFFD and control chars).
+A dense-but-unreadable layer — typically a scan whose fonts have no `ToUnicode`
+map, producing symbol soup — is rejected: `needs_ocr=True`,
+`text_layer_rejected=True`, and every produced page carries a
+`text_layer_rejected` issue. Recognition then renders pages and runs the selected
+engine. Font metadata (`all fonts non-Unicode`) is reported but not decisive:
+legitimate base-14 fonts also report no `ToUnicode` yet score readable. When no
+text can be extracted, the probe falls back to the density-only decision so real
+text is never rejected on missing signals. Bumping the readability policy bumps
+`OCR_OUTPUT_SCHEMA_VERSION`, invalidating stale cache entries.
 
 Probe reads module specs and executable paths only. Broken installs can still
 raise at import time, so engine import sites convert `ImportError` and native

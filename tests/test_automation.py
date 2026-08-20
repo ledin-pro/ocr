@@ -164,6 +164,42 @@ class EngineConfiguration(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 cli._resolve_engine(self.parse(), cli.build_parser())
 
+    def test_vision_environment(self):
+        args = self.parse()
+        with mock.patch.dict(
+            os.environ,
+            {
+                "OCR_VISION_API_KEY": "env-key",
+                "OCR_VISION_MODEL": "env-model",
+                "OCR_VISION_API_URL": "http://localhost:8000/v1",
+            },
+            clear=True,
+        ):
+            cli._resolve_vision_args(args)
+        self.assertEqual(args.vision_api_key, "env-key")
+        self.assertEqual(args.vision_model, "env-model")
+        self.assertEqual(args.vision_api_url, "http://localhost:8000/v1")
+
+    def test_cli_vision_values_override_environment(self):
+        args = self.parse(
+            "--vision-api-key", "cli-key",
+            "--vision-model", "cli-model",
+            "--vision-api-url", "http://localhost:9000/v1",
+        )
+        with mock.patch.dict(
+            os.environ,
+            {
+                "OCR_VISION_API_KEY": "env-key",
+                "OCR_VISION_MODEL": "env-model",
+                "OCR_VISION_API_URL": "http://localhost:8000/v1",
+            },
+            clear=True,
+        ):
+            cli._resolve_vision_args(args)
+        self.assertEqual(args.vision_api_key, "cli-key")
+        self.assertEqual(args.vision_model, "cli-model")
+        self.assertEqual(args.vision_api_url, "http://localhost:9000/v1")
+
     def test_auto_escalate_environment(self):
         args = self.parse()
         args.engine = "tesseract"

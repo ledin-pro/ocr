@@ -251,10 +251,12 @@ python -m pip install "pro-ledin-ocr[vision]"
 python -c "import openai; print(openai.__version__)"
 ```
 
-`vision` needs explicit `--vision-api-key` and `--vision-model`; optional
-`--vision-api-url` selects OpenAI-compatible endpoint. Credentials are not read
-from generic OpenAI environment variables. Verification should avoid uploading
-user document until user approves external processing. Package source:
+`vision` needs `--vision-api-key` and `--vision-model`, or the corresponding
+`OCR_VISION_API_KEY` and `OCR_VISION_MODEL` environment variables. Optional
+`--vision-api-url` / `OCR_VISION_API_URL` selects the OpenAI-compatible endpoint;
+CLI flags take precedence. Credentials are not read from generic OpenAI
+environment variables. Verification should avoid uploading user document until
+user approves external processing. Package source:
 
 - [OpenAI Python library](https://github.com/openai/openai-python)
 

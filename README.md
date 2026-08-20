@@ -46,6 +46,10 @@ ocr slides.pdf --engine vision --pages 9,12 \
   --vision-prompt "Preserve tables and empty cells"
 ocr scan.pdf --auto-escalate easyocr,vision \
   --vision-api-key "$KEY" --vision-model my-vision-model
+export OCR_VISION_API_KEY="$KEY"
+export OCR_VISION_MODEL="my-vision-model"
+export OCR_VISION_API_URL="http://localhost:8000/v1"
+ocr scan.pdf --engine vision
 ocr table.pdf --engine paddleocr-vl-mlx \
   --paddle-vl-server-url http://127.0.0.1:8111/ \
   --paddle-vl-model PaddlePaddle/PaddleOCR-VL-1.6

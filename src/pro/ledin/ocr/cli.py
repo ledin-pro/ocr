@@ -262,12 +262,14 @@ Examples:
     )
     p.add_argument("--no-cleanup", action="store_true",
                    help="Skip whitespace / ligature cleanup of OCR output")
-    p.add_argument("--vision-api-url", default="",
-                   help="OpenAI-compatible base URL for --engine vision")
-    p.add_argument("--vision-api-key", default="",
-                   help="API key for --engine vision (required; env vars are not read)")
-    p.add_argument("--vision-model", default="",
-                    help="Model name for --engine vision (required; no default)")
+    p.add_argument("--vision-api-url", default=None,
+                   help="OpenAI-compatible base URL for --engine vision "
+                        "(or OCR_VISION_API_URL)")
+    p.add_argument("--vision-api-key", default=None,
+                   help="API key for --engine vision (or OCR_VISION_API_KEY; required)")
+    p.add_argument("--vision-model", default=None,
+                   help="Model name for --engine vision "
+                        "(or OCR_VISION_MODEL; required)")
     p.add_argument("--paddle-vl-server-url", default="",
                    help="Loopback MLX-VLM service URL for --engine paddleocr-vl-mlx")
     p.add_argument("--paddle-vl-model", default="",
@@ -382,6 +384,18 @@ def _resolve_auto_escalate(
     return tuple(engine for engine in engines if engine != args.engine)
 
 
+def _resolve_vision_args(args: argparse.Namespace) -> None:
+    """Fill omitted Vision CLI values from the OCR_VISION_* environment."""
+    env_names = {
+        "vision_api_url": "OCR_VISION_API_URL",
+        "vision_api_key": "OCR_VISION_API_KEY",
+        "vision_model": "OCR_VISION_MODEL",
+    }
+    for argument, env_name in env_names.items():
+        if getattr(args, argument) is None:
+            setattr(args, argument, os.environ.get(env_name, ""))
+
+
 # ── entry point ───────────────────────────────────────────────────────────────
 
 def run(argv: list[str] | None = None) -> None:
@@ -413,6 +427,7 @@ def run(argv: list[str] | None = None) -> None:
     args.auto_escalate = _resolve_auto_escalate(args, parser)
     _validate_output_args(args, parser)
     vision_prompt = _vision_prompt_from_args(args, parser)
+    _resolve_vision_args(args)
 
     options = RecognizeOptions(
         engine=args.engine,

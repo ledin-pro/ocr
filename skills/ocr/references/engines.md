@@ -4,7 +4,7 @@
 
 | Tier | Engine | Best use | Languages | Requirement |
 |---|---|---|---|---|
-| 0 | Text layer | PDF already contains a readable text layer | Embedded text | Poppler or PyMuPDF |
+| 0 | Text layer + Camelot | Readable text PDF and native tables | Embedded text | Poppler/PyMuPDF plus bundled Camelot |
 | 1 | `tesseract` | Clean scans, typed text | 160+ with language data | Tesseract binary |
 | 2 | `easyocr` | Handwriting, degraded scans | 80+ | `pro-ledin-ocr[easyocr]`, models |
 | 2.5 | `paddleocr` | CJK, multilingual, angled text | 100+ | `pro-ledin-ocr[paddle]`, PaddlePaddle, models |
@@ -15,6 +15,31 @@
 Engine resolution: `--engine` > `OCR_ENGINE` > `tesseract`. Valid values are
 `tesseract`, `easyocr`, `paddleocr`, `paddleocr-vl-mlx`, and `vision`. There is no `auto` value.
 Automated OpenAI-compatible extraction uses `vision`; former alias is removed.
+
+## Native Camelot table stage
+
+Camelot runs only after the text-layer readability gate accepts a PDF. It is not
+an OCR engine and does not participate in `--auto-escalate`.
+
+| Flavor | Best use |
+|---|---|
+| `auto` | Default; compare classic auto-detection with a `stream` candidate |
+| `lattice` | Tables with explicit horizontal and vertical rules |
+| `stream` | Borderless tables separated by whitespace and alignment |
+| `network` | Repeated coordinate alignments and form-like grids |
+| `hybrid` | Mixed line and alignment cues |
+
+`ml` is intentionally not exposed. Automatic native extraction must not load a
+visual model. Disable the stage with `--no-tables`.
+
+Camelot candidates are normalized and checked against the source table region.
+Low parse quality, weak text coverage, or lost numeric tokens prevents
+replacement. Accepted regions become pipe Markdown or HTML; the original linear
+text remains available in TXT and JSON `text`.
+
+Limitations: image-only tables require OCR; malformed text layers are rejected
+before Camelot; cross-page tables remain page-local; merged cells may be
+flattened and marked `table_spans_flattened` when geometry is ambiguous.
 
 ## Requirement probe
 

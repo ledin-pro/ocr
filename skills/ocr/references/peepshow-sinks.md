@@ -101,7 +101,7 @@ Default output is atomically written to `<outputDir>/ocr.json`:
 ```json
 {
   "schemaVersion": 1,
-  "packageVersion": "0.5.1",
+  "packageVersion": "0.6.0",
   "source": "peepshow",
   "peepshowOutputDir": "/tmp/peepshow-run",
   "strategy": "scene",

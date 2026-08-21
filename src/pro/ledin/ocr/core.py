@@ -2,7 +2,7 @@
 """
 core — layered OCR workhorse for the `pro.ledin.ocr` package.
 
-Baseline: Python stdlib + pdftoppm + pdftotext + tesseract (all assumed present).
+Baseline: Python stdlib + Camelot + pdftoppm + pdftotext + tesseract.
 Optional tiers: pytesseract, PyMuPDF, opencv-python, numpy, easyocr, openai.
 Install optional tiers on-demand via extras: pip install "pro-ledin-ocr[all]".
 
@@ -18,6 +18,8 @@ CLI usage:      ocr INPUT [INPUT ...] [options]   (see `ocr --help`)
 from __future__ import annotations
 
 import base64
+from collections import Counter
+import html as html_lib
 import hashlib
 import importlib.util
 import ipaddress
@@ -30,6 +32,8 @@ import subprocess
 import sys
 import tempfile
 import time
+import warnings
+import xml.etree.ElementTree as ET
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -110,8 +114,9 @@ class OcrRequirementError(OcrError):
         self.first_run_note = result.first_run_note
 
 # ── version ───────────────────────────────────────────────────────────────────
-__version__ = "0.5.1"
-OCR_OUTPUT_SCHEMA_VERSION = 3
+__version__ = "0.6.0"
+OCR_OUTPUT_SCHEMA_VERSION = 4
+TABLE_OUTPUT_VERSION = 1
 
 
 # ── constants ─────────────────────────────────────────────────────────────────
@@ -164,6 +169,7 @@ TESS_TO_PADDLE_LANG: dict[str, str] = {
 
 DEFAULT_MIN_CONF = 60.0
 DEFAULT_PSM = 3
+TABLE_FLAVORS = ("auto", "lattice", "stream", "network", "hybrid")
 SMALL_WIDTH_THRESHOLD = 1400  # px — upscale if narrower
 PADDLEX_OCR_MODULES = (
     "bs4", "einops", "ftfy", "imagesize", "jinja2", "latex2mathml", "lxml",
@@ -1067,6 +1073,386 @@ def _extract_pdftotext(path: str, pages: list[int] | None, caps: Caps) -> list[s
     if pages:
         return [all_pages[p - 1] for p in pages if p <= len(all_pages)]
     return [p for p in all_pages if p.strip()]
+
+
+# ── text-PDF table extraction ─────────────────────────────────────────────────
+
+def _clean_table_cell(value: Any) -> str:
+    text = "" if value is None else str(value)
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    return "\n".join(re.sub(r"[ \t]+", " ", line).strip() for line in text.splitlines()).strip()
+
+
+def _markdown_cell(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("|", "\\|").replace("\n", "<br>")
+
+
+def _render_pipe_table(rows: list[list[str]]) -> str:
+    if not rows:
+        return ""
+    width = max(len(row) for row in rows)
+    padded = [row + [""] * (width - len(row)) for row in rows]
+    header = "| " + " | ".join(_markdown_cell(cell) for cell in padded[0]) + " |"
+    separator = "| " + " | ".join("---" for _ in range(width)) + " |"
+    body = ["| " + " | ".join(_markdown_cell(cell) for cell in row) + " |" for row in padded[1:]]
+    return "\n".join([header, separator, *body])
+
+
+def _render_html_table(rows: list[list[str]]) -> str:
+    if not rows:
+        return ""
+    width = max(len(row) for row in rows)
+    padded = [row + [""] * (width - len(row)) for row in rows]
+    lines = ["<table>", "  <thead>", "    <tr>"]
+    for cell in padded[0]:
+        value = html_lib.escape(cell).replace("\n", "<br>")
+        lines.append(f"      <th>{value}</th>")
+    lines.extend(["    </tr>", "  </thead>", "  <tbody>"])
+    for row in padded[1:]:
+        lines.append("    <tr>")
+        for cell in row:
+            value = html_lib.escape(cell).replace("\n", "<br>")
+            lines.append(f"      <td>{value}</td>")
+        lines.append("    </tr>")
+    lines.extend(["  </tbody>", "</table>"])
+    return "\n".join(lines)
+
+
+def _camelot_has_spans(table: Any) -> bool:
+    for row in getattr(table, "cells", ()) or ():
+        for cell in row:
+            if getattr(cell, "hspan", False) or getattr(cell, "vspan", False):
+                return True
+    return False
+
+
+def _camelot_rows(table: Any) -> list[list[str]]:
+    frame = getattr(table, "df", None)
+    if frame is None:
+        return []
+    values = frame.values.tolist() if hasattr(frame, "values") else frame
+    return [[_clean_table_cell(cell) for cell in row] for row in values]
+
+
+def _camelot_bbox(table: Any) -> list[float] | None:
+    raw = getattr(table, "bbox", None) or getattr(table, "_bbox", None)
+    if not raw or len(raw) != 4:
+        return None
+    return [float(value) for value in raw]
+
+
+def _metric_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _normalize_camelot_bbox(raw: list[float], page_height: float) -> list[float]:
+    x0, y0, x1, y1 = raw
+    left, right = sorted((x0, x1))
+    top = page_height - max(y0, y1)
+    bottom = page_height - min(y0, y1)
+    return [round(left, 3), round(top, 3), round(right, 3), round(bottom, 3)]
+
+
+def _bbox_intersection(first: list[float], second: list[float]) -> float:
+    left = max(first[0], second[0])
+    top = max(first[1], second[1])
+    right = min(first[2], second[2])
+    bottom = min(first[3], second[3])
+    return max(0.0, right - left) * max(0.0, bottom - top)
+
+
+def _bbox_area(bbox: list[float]) -> float:
+    return max(0.0, bbox[2] - bbox[0]) * max(0.0, bbox[3] - bbox[1])
+
+
+def _bbox_iou(first: list[float], second: list[float]) -> float:
+    intersection = _bbox_intersection(first, second)
+    union = _bbox_area(first) + _bbox_area(second) - intersection
+    return intersection / union if union else 0.0
+
+
+def _layout_fitz(path: str, pages: list[int] | None, fitz: Any) -> dict[int, dict[str, Any]]:
+    doc = fitz.open(path)
+    result: dict[int, dict[str, Any]] = {}
+    try:
+        for index, page in enumerate(doc):
+            page_number = index + 1
+            if pages and page_number not in pages:
+                continue
+            blocks = []
+            page_dict = page.get_text("dict")
+            for block in page_dict.get("blocks", []):
+                for line in block.get("lines", []):
+                    text = "".join(span.get("text", "") for span in line.get("spans", [])).strip()
+                    bbox = line.get("bbox")
+                    if text and bbox and len(bbox) == 4:
+                        blocks.append({"bbox": [float(value) for value in bbox], "text": text})
+            result[page_number] = {
+                "width": float(page.rect.width),
+                "height": float(page.rect.height),
+                "blocks": blocks,
+            }
+    finally:
+        doc.close()
+    return result
+
+
+def _layout_pdftotext(path: str, pages: list[int] | None, caps: Caps) -> dict[int, dict[str, Any]]:
+    caps.require_pdftotext()
+    xml = _run([caps.bin_pdftotext, "-bbox-layout", path, "-"]).stdout
+    root = ET.fromstring(xml)
+    result: dict[int, dict[str, Any]] = {}
+    page_number = 0
+    for page in (element for element in root.iter() if element.tag.rsplit("}", 1)[-1] == "page"):
+        page_number += 1
+        if pages and page_number not in pages:
+            continue
+        blocks = []
+        for line in (element for element in page.iter() if element.tag.rsplit("}", 1)[-1] == "line"):
+            words = [
+                (word.text or "").strip()
+                for word in line.iter()
+                if word.tag.rsplit("}", 1)[-1] == "word" and (word.text or "").strip()
+            ]
+            if not words:
+                continue
+            try:
+                bbox = [
+                    float(line.attrib["xMin"]),
+                    float(line.attrib["yMin"]),
+                    float(line.attrib["xMax"]),
+                    float(line.attrib["yMax"]),
+                ]
+            except (KeyError, ValueError):
+                continue
+            blocks.append({"bbox": bbox, "text": " ".join(words)})
+        result[page_number] = {
+            "width": float(page.attrib.get("width", 0)),
+            "height": float(page.attrib.get("height", 0)),
+            "blocks": blocks,
+        }
+    return result
+
+
+def extract_text_layer_layout(
+    path: str,
+    pages: list[int] | None,
+    caps: Caps,
+) -> dict[int, dict[str, Any]]:
+    if caps.has_fitz:
+        fitz = _fitz_or_fallback(caps, "text layout")
+        if fitz is not None:
+            return _layout_fitz(path, pages, fitz)
+    return _layout_pdftotext(path, pages, caps)
+
+
+def extract_text_pdf_tables(
+    path: str,
+    pages: list[int] | None,
+    flavor: str = "auto",
+    verbose: bool = False,
+) -> dict[int, list[dict[str, Any]]]:
+    if flavor not in TABLE_FLAVORS:
+        _fatal(f"unsupported Camelot table flavor: {flavor}", EXIT_BAD_ARGS)
+    try:
+        import camelot
+    except ImportError as exc:
+        raise OcrError(
+            "Camelot is required for text-PDF table extraction; reinstall pro-ledin-ocr"
+        ) from exc
+
+    page_spec = ",".join(str(page) for page in pages) if pages else "all"
+    def read(selected_pages: str, selected_flavor: str) -> list[Any]:
+        with warnings.catch_warnings():
+            if not verbose:
+                warnings.simplefilter("ignore", UserWarning)
+            return list(camelot.read_pdf(
+                path,
+                pages=selected_pages,
+                flavor=selected_flavor,
+            ))
+
+    tables = read(page_spec, flavor)
+    if flavor == "auto" and pages:
+        stream_pages = [
+            page
+            for page in pages
+            if not any(
+                int(getattr(table, "page", 1)) == page
+                and str(getattr(table, "flavor", "")) == "stream"
+                for table in tables
+            )
+        ]
+        if stream_pages:
+            tables.extend(read(",".join(str(page) for page in stream_pages), "stream"))
+    result: dict[int, list[dict[str, Any]]] = {}
+    for table in tables:
+        rows = _camelot_rows(table)
+        raw_bbox = _camelot_bbox(table)
+        if not rows or raw_bbox is None:
+            continue
+        report = dict(getattr(table, "parsing_report", {}) or {})
+        page_number = int(getattr(table, "page", report.get("page", 1)))
+        complex_structure = _camelot_has_spans(table)
+        issues = ["table_spans_flattened"] if complex_structure else []
+        rendered = _render_html_table(rows) if complex_structure else _render_pipe_table(rows)
+        result.setdefault(page_number, []).append({
+            "extractor": "camelot",
+            "flavor": str(getattr(table, "flavor", flavor)),
+            "page": page_number,
+            "raw_bbox": raw_bbox,
+            "rows": rows,
+            "format": "html" if complex_structure else "markdown",
+            "rendered": rendered,
+            "accuracy": _metric_float(report.get("accuracy")),
+            "whitespace": _metric_float(report.get("whitespace")),
+            "confidence": _metric_float(report.get("confidence")),
+            "order": report.get("order"),
+            "issues": issues,
+            "accepted": False,
+        })
+    _log(f"camelot: detected {sum(len(items) for items in result.values())} table(s)", verbose)
+    return result
+
+
+def _normalized_tokens(text: str) -> list[str]:
+    return [token.casefold().replace(",", ".") for token in re.findall(r"[\w]+(?:[.,]\d+)?", text)]
+
+
+def _numeric_tokens(text: str) -> list[str]:
+    return [
+        token.replace(",", ".").replace("–", "-")
+        for token in re.findall(r"(?<!\w)[<>±]?\d+(?:[.,]\d+)?(?:[-–]\d+(?:[.,]\d+)?)?", text)
+    ]
+
+
+def _counter_coverage(source: list[str], extracted: list[str]) -> float:
+    if not source:
+        return 1.0
+    source_counts = Counter(source)
+    extracted_counts = Counter(extracted)
+    matched = sum(min(count, extracted_counts[token]) for token, count in source_counts.items())
+    return matched / sum(source_counts.values())
+
+
+def _blocks_in_bbox(blocks: list[dict[str, Any]], bbox: list[float]) -> list[dict[str, Any]]:
+    selected = []
+    for block in blocks:
+        block_bbox = block["bbox"]
+        intersection = _bbox_intersection(block_bbox, bbox)
+        if intersection and intersection / max(_bbox_area(block_bbox), 1.0) >= 0.25:
+            selected.append(block)
+    return selected
+
+
+def _validate_table(table: dict[str, Any], blocks: list[dict[str, Any]]) -> list[str]:
+    issues = list(table.get("issues", []))
+    rows = table["rows"]
+    width = max((len(row) for row in rows), default=0)
+    nonempty_rows = sum(any(cell.strip() for cell in row) for row in rows)
+    nonempty_columns = sum(
+        any(column < len(row) and row[column].strip() for row in rows)
+        for column in range(width)
+    )
+    if nonempty_rows < 2 or nonempty_columns < 2:
+        issues.append("table_too_small")
+    accuracy = table.get("accuracy")
+    confidence = table.get("confidence")
+    whitespace = table.get("whitespace")
+    if accuracy is not None and accuracy < 80:
+        issues.append("table_parse_quality_low")
+    if (confidence is not None and whitespace is not None
+            and confidence < 0.4 and whitespace > 60):
+        issues.append("table_parse_quality_low")
+
+    region_text = "\n".join(block["text"] for block in _blocks_in_bbox(blocks, table["bbox"]))
+    table_text = "\n".join("\t".join(row) for row in rows)
+    if region_text:
+        text_coverage = _counter_coverage(_normalized_tokens(region_text), _normalized_tokens(table_text))
+        numeric_coverage = _counter_coverage(_numeric_tokens(region_text), _numeric_tokens(table_text))
+        table["text_coverage"] = round(text_coverage, 4)
+        table["numeric_coverage"] = round(numeric_coverage, 4)
+        if text_coverage < 0.55:
+            issues.append("table_text_coverage_low")
+        if numeric_coverage < 0.9:
+            issues.append("table_numeric_coverage_low")
+    else:
+        issues.append("table_region_text_missing")
+    return issues
+
+
+def _deduplicate_tables(tables: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    selected: list[dict[str, Any]] = []
+    ranked = sorted(
+        tables,
+        key=lambda table: (
+            bool(table.get("accepted")),
+            table.get("confidence") or 0,
+            table.get("accuracy") or 0,
+            -(table.get("whitespace") if table.get("whitespace") is not None else 100),
+        ),
+        reverse=True,
+    )
+    for candidate in ranked:
+        if any(
+            _bbox_iou(candidate["bbox"], existing["bbox"]) >= 0.8
+            or _bbox_intersection(candidate["bbox"], existing["bbox"])
+            / max(_bbox_area(existing["bbox"]), 1.0)
+            >= 0.9
+            or _bbox_intersection(candidate["bbox"], existing["bbox"])
+            / max(_bbox_area(candidate["bbox"]), 1.0)
+            >= 0.9
+            for existing in selected
+        ):
+            continue
+        selected.append(candidate)
+    return sorted(selected, key=lambda table: (table["bbox"][1], table["bbox"][0]))
+
+
+def _compose_page_markdown(
+    blocks: list[dict[str, Any]],
+    tables: list[dict[str, Any]],
+) -> str:
+    accepted = [table for table in tables if table.get("accepted")]
+    remaining_blocks = []
+    for block in blocks:
+        if any(
+            _bbox_intersection(block["bbox"], table["bbox"])
+            / max(_bbox_area(block["bbox"]), 1.0)
+            >= 0.25
+            for table in accepted
+        ):
+            continue
+        remaining_blocks.append(block)
+    items = [
+        (block["bbox"][1], block["bbox"][0], "text", block["text"])
+        for block in remaining_blocks
+    ]
+    items.extend(
+        (table["bbox"][1], table["bbox"][0], "table", table["rendered"])
+        for table in accepted
+    )
+    sections = []
+    text_lines = []
+    for _, _, kind, text in sorted(items):
+        text = text.strip()
+        if not text:
+            continue
+        if kind == "table":
+            if text_lines:
+                sections.append("\n".join(text_lines))
+                text_lines = []
+            sections.append(text)
+        else:
+            text_lines.append(text)
+    if text_lines:
+        sections.append("\n".join(text_lines))
+    return "\n\n".join(sections)
 
 
 # ── page rendering ────────────────────────────────────────────────────────────
@@ -2031,6 +2417,8 @@ class RecognizeOptions:
     skip_ocr: bool = False
     paddle_vl_server_url: str = ""
     paddle_vl_model: str = ""
+    extract_tables: bool = True
+    table_flavor: str = "auto"
 
 
 def _process_file_once(
@@ -2111,6 +2499,12 @@ def _process_file_once(
             "model": options.paddle_vl_model.strip(),
             "url": options.paddle_vl_server_url.strip(),
         }, ensure_ascii=False, sort_keys=True)
+    table_context = json.dumps({
+        "enabled": options.extract_tables,
+        "flavor": options.table_flavor,
+        "output_version": TABLE_OUTPUT_VERSION,
+    }, sort_keys=True)
+    engine_context = f"{engine_context}|tables={table_context}" if engine_context else f"tables={table_context}"
     cache_key = _sha1_key(
         path,
         options.engine,
@@ -2130,21 +2524,79 @@ def _process_file_once(
     # Fast path: real text layer
     if (input_type == "pdf"
             and probe
-            and not probe["needs_ocr"]
-            and not options.force):
+            and not probe["needs_ocr"]):
         texts = extract_text_layer(path, page_range, caps)
+        selected_pages = page_range or list(range(1, probe["pages"] + 1))
+        layouts: dict[int, dict[str, Any]] = {}
+        tables_by_page: dict[int, list[dict[str, Any]]] = {}
+        table_page_issues: dict[int, list[str]] = {}
+        table_error = ""
+        if options.extract_tables:
+            try:
+                layouts = extract_text_layer_layout(path, selected_pages, caps)
+                raw_tables = extract_text_pdf_tables(
+                    path,
+                    selected_pages,
+                    options.table_flavor,
+                    verbose,
+                )
+                blocking_issues = {
+                    "table_too_small",
+                    "table_text_coverage_low",
+                    "table_numeric_coverage_low",
+                    "table_region_text_missing",
+                    "table_parse_quality_low",
+                }
+                for page_number, tables in raw_tables.items():
+                    layout = layouts.get(page_number)
+                    if not layout:
+                        table_page_issues.setdefault(page_number, []).append(
+                            "table_layout_missing"
+                        )
+                        continue
+                    normalized = []
+                    for table in tables:
+                        table["bbox"] = _normalize_camelot_bbox(
+                            table.pop("raw_bbox"), layout["height"]
+                        )
+                        table["issues"] = _validate_table(table, layout["blocks"])
+                        table["accepted"] = not any(
+                            issue in blocking_issues for issue in table["issues"]
+                        )
+                        normalized.append(table)
+                    tables_by_page[page_number] = _deduplicate_tables(normalized)
+            except OcrError:
+                raise
+            except Exception as exc:
+                table_error = str(exc)
+                _log(f"camelot failed; preserving text layer: {exc}", verbose)
         for i, text in enumerate(texts):
             pnum = (page_range[i] if page_range else i + 1)
             cleaned = general_cleanup(text) if not options.no_cleanup else text
-            pages_data.append({
+            page_tables = tables_by_page.get(pnum, [])
+            issues = []
+            issues.extend(table_page_issues.get(pnum, []))
+            if table_error:
+                issues.append("table_extraction_failed")
+            if (page_tables
+                    and not any(table.get("accepted") for table in page_tables)
+                    and any(not table.get("accepted") for table in page_tables)):
+                issues.append("table_extraction_rejected")
+            page_data = {
                 "n": pnum,
                 "source": "text_layer",
                 "mean_conf": 100.0,
                 "flag": None,
                 "text": cleaned,
-                "issues": [],
+                "issues": issues,
                 "words": [],
-            })
+                "tables": page_tables,
+            }
+            if page_tables and any(table.get("accepted") for table in page_tables):
+                page_data["markdown"] = _compose_page_markdown(
+                    layouts[pnum]["blocks"], page_tables
+                )
+            pages_data.append(page_data)
         return _cache_and_return(cache, cache_key, pages_data, probe)
 
     # Automated vision path
@@ -2331,6 +2783,9 @@ def _workflow_cache_key(path: str, options: RecognizeOptions) -> str:
         "vision_prompt": resolve_vision_prompt(options.vision_prompt),
         "paddle_vl_server_url": options.paddle_vl_server_url,
         "paddle_vl_model": options.paddle_vl_model,
+        "extract_tables": options.extract_tables,
+        "table_flavor": options.table_flavor,
+        "table_output_version": TABLE_OUTPUT_VERSION,
         "output_schema": OCR_OUTPUT_SCHEMA_VERSION,
     }
     return hashlib.sha1(
@@ -2457,10 +2912,10 @@ def recognize(
 
     Manages a throwaway temp directory for rendered pages and cleans it up
     before returning. Each returned page dict has: n, source, mean_conf,
-        flag, text, words (engine=vision instead returns a single combined
-    page whose `text` holds the whole document's Markdown). Structured engines
-    may also return native `markdown` and normalized `issues`. Format the
-    result with `to_markdown()`, `to_text()`, or `to_json()`.
+    flag, text, words, issues, and optional tables/markdown. Engine=vision
+    instead returns a single combined page whose `text` holds the whole
+    document's Markdown. Format the result with `to_markdown()`, `to_text()`,
+    or `to_json()`.
 
     `options.verbose` enables progress logging only. The capability dump stays
     a CLI diagnostic; pass `caps=Caps(report=True)` to opt into it.

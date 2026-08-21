@@ -3,12 +3,12 @@ revision = 3
 requires-python = ">=3.10"
 resolution-markers = [
     "python_full_version >= '3.14' and sys_platform == 'darwin'",
-    "python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform == 'darwin'",
     "python_full_version >= '3.14' and platform_machine == 'aarch64' and sys_platform == 'linux'",
-    "python_full_version >= '3.12' and python_full_version < '3.14' and platform_machine == 'aarch64' and sys_platform == 'linux'",
     "python_full_version >= '3.14' and sys_platform == 'win32'",
     "python_full_version >= '3.14' and sys_platform == 'emscripten'",
     "(python_full_version >= '3.14' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version >= '3.14' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'linux' and sys_platform != 'win32')",
+    "python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform == 'darwin'",
+    "python_full_version >= '3.12' and python_full_version < '3.14' and platform_machine == 'aarch64' and sys_platform == 'linux'",
     "python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform == 'win32'",
     "python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform == 'emscripten'",
     "(python_full_version >= '3.12' and python_full_version < '3.14' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'linux' and sys_platform != 'win32')",
@@ -273,6 +273,28 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/70/d2/47e8bc06fe2a06d3f5bdf20f1126ab66c4e99dc48d940e7ba873f7ac7131/cachetools-7.1.7.tar.gz", hash = "sha256:a3e2a00b14d8f8a6b70c1dae7b4685e7ad3bc965c5b42124a2d6ce895da6cf50", size = 40680, upload-time = "2026-08-01T21:20:40.434Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/e4/d8/767faeda872075724b95dd675466a645f1b92aadcdcf2d1429dcfd76c176/cachetools-7.1.7-py3-none-any.whl", hash = "sha256:ef98ef375ad188819ef2f9b3645e3987f4b8c5b7550e436ad998c2de78296df0", size = 16830, upload-time = "2026-08-01T21:20:38.977Z" },
+]
+
+[[package]]
+name = "camelot-py"
+version = "2.0.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "click" },
+    { name = "numpy" },
+    { name = "opencv-python-headless" },
+    { name = "openpyxl" },
+    { name = "pandas", version = "2.3.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11' or python_full_version >= '3.14'" },
+    { name = "pandas", version = "3.0.5", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11' and python_full_version < '3.14'" },
+    { name = "pillow" },
+    { name = "playa-pdf" },
+    { name = "pypdfium2" },
+    { name = "tabulate" },
+    { name = "typing-extensions", marker = "python_full_version < '3.11'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/4d/6c/3b6057077feb802ce6ef4e2ebd11a50c12b7065aeb946cc0d9296d195246/camelot_py-2.0.0.tar.gz", hash = "sha256:e96891d30707b3e2f1c08cb7ae15eea67abe72485ca92c7025b6308ba37bd3cd", size = 140937, upload-time = "2026-06-04T16:31:28.8Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ce/30/e220f65dda2cea102f538ae64f29d6a7a96884cc0ec2d286adf7d2c9dd3d/camelot_py-2.0.0-py3-none-any.whl", hash = "sha256:c2c6c7e4b0cb422b8050624c1d54026a8b3af1d86b7d7951eddeb18854fbcfb6", size = 113176, upload-time = "2026-06-04T16:31:27.422Z" },
 ]
 
 [[package]]
@@ -1515,6 +1537,15 @@ wheels = [
 ]
 
 [[package]]
+name = "mypy-extensions"
+version = "1.1.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/a2/6e/371856a3fb9d31ca8dac321cda606860fa4548858c0cc45d9d1d4ca2628b/mypy_extensions-1.1.0.tar.gz", hash = "sha256:52e68efc3284861e772bbcd66823fde5ae21fd2fdb51c62a211403730b916558", size = 6343, upload-time = "2025-04-22T14:54:24.164Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/79/7b/2c79738432f5c924bef5071f933bcc9efd0473bac3b4aa584a6f7c1c8df8/mypy_extensions-1.1.0-py3-none-any.whl", hash = "sha256:1be4cccdb0f2482337c4743e60421de3a356cd97508abadd57d47403e94f5505", size = 4963, upload-time = "2025-04-22T14:54:22.983Z" },
+]
+
+[[package]]
 name = "narwhals"
 version = "2.24.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1543,12 +1574,12 @@ version = "3.6.1"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
     "python_full_version >= '3.14' and sys_platform == 'darwin'",
-    "python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform == 'darwin'",
     "python_full_version >= '3.14' and platform_machine == 'aarch64' and sys_platform == 'linux'",
-    "python_full_version >= '3.12' and python_full_version < '3.14' and platform_machine == 'aarch64' and sys_platform == 'linux'",
     "python_full_version >= '3.14' and sys_platform == 'win32'",
     "python_full_version >= '3.14' and sys_platform == 'emscripten'",
     "(python_full_version >= '3.14' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version >= '3.14' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'linux' and sys_platform != 'win32')",
+    "python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform == 'darwin'",
+    "python_full_version >= '3.12' and python_full_version < '3.14' and platform_machine == 'aarch64' and sys_platform == 'linux'",
     "python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform == 'win32'",
     "python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform == 'emscripten'",
     "(python_full_version >= '3.12' and python_full_version < '3.14' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'linux' and sys_platform != 'win32')",
@@ -2263,6 +2294,47 @@ wheels = [
 ]
 
 [[package]]
+name = "playa-pdf"
+version = "1.1.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "mypy-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/af/d2/9575801a5e41fdffbac0fc356a7aae462e11f58473b3e78070185a9e7ced/playa_pdf-1.1.0.tar.gz", hash = "sha256:6414a0779fdcc96284588767738c2bd71ed3aa65a1a8fa647a4ab09dce4ff017", size = 8644947, upload-time = "2026-03-09T16:53:02.734Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/45/3b/6ab78b3c0ec8c2acd7a8693f1e863dcdbddcf0c10eb89c0ea3842ca8f596/playa_pdf-1.1.0-cp310-cp310-macosx_10_9_x86_64.whl", hash = "sha256:0f3e250b91f3ac5db60171a66b1f594b1a6582bf71c4e206d6c03a0f8122ced9", size = 8549069, upload-time = "2026-03-09T16:51:47.223Z" },
+    { url = "https://files.pythonhosted.org/packages/bb/02/2a0af0040065c7c4cba5822362179d45da22845ad827d6b5fefa413f9088/playa_pdf-1.1.0-cp310-cp310-macosx_11_0_arm64.whl", hash = "sha256:0c5adb706ba91137fbe0fbb7204743e60c0e4affb24cbcc138fff50697609cdd", size = 8536371, upload-time = "2026-03-09T16:51:49.539Z" },
+    { url = "https://files.pythonhosted.org/packages/1d/ae/18267af116b91d2efaac25b813b67216147144470a550f49dfe9f2b0d1ab/playa_pdf-1.1.0-cp310-cp310-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:55dd02fd50f1e58cc87680f88d56b46d0c6050dec9b2b9d5a6c6746b7a3705f9", size = 9095694, upload-time = "2026-03-09T16:51:51.99Z" },
+    { url = "https://files.pythonhosted.org/packages/6f/8b/564c9e7bdcd48739bad61e3e45be7579777ba1d58559c1fa00c0cc065c16/playa_pdf-1.1.0-cp310-cp310-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:a788356f0c6d2ac95261ddec44e57761faf4b9cfa47a589113547e716fff846f", size = 9155327, upload-time = "2026-03-09T16:51:55.364Z" },
+    { url = "https://files.pythonhosted.org/packages/66/3f/460454ac8fc4fcd5ba039e3d636cc15162027cafe42c0ef0c9213910a357/playa_pdf-1.1.0-cp310-cp310-win_amd64.whl", hash = "sha256:8a06cb9e2abb0e45ba651379604c624b4f645548a68ff41e3395400f9d7c30f0", size = 8233510, upload-time = "2026-03-09T16:51:57.468Z" },
+    { url = "https://files.pythonhosted.org/packages/8c/5c/64d09c1ac223e6aba6759769b6e2285f311e0eafb062f8f9ba42615e2fea/playa_pdf-1.1.0-cp311-cp311-macosx_10_9_x86_64.whl", hash = "sha256:daf8774b97933ddf8fb9120204ff9db96c56c360dfdecc489be5cec3338d0b5c", size = 8537181, upload-time = "2026-03-09T16:52:00.22Z" },
+    { url = "https://files.pythonhosted.org/packages/f9/ea/1e0c2c66185dc0ae1bd09739add4f75cc70f9420028073d46008a8b75dc0/playa_pdf-1.1.0-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:0266a682d6c23658481a7f1ad590c9da8c174f4c5a6eac8052827174cfa287bf", size = 8522311, upload-time = "2026-03-09T16:52:02.554Z" },
+    { url = "https://files.pythonhosted.org/packages/eb/2e/5b0a7746c9ab3ecb230eff493fe86273993f4a9074660d98f4431a0847eb/playa_pdf-1.1.0-cp311-cp311-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:78ca09679d78126cac95232e82b51f978f0d3373f2519e09036d87b13fe11d50", size = 9090545, upload-time = "2026-03-09T16:52:05.092Z" },
+    { url = "https://files.pythonhosted.org/packages/6f/4d/b456af5206403392d288815c05ee4b86387d78036293bdd043e0afef16a8/playa_pdf-1.1.0-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:499b9e2830faa0e680139b6e0363118cd368e7ab75e31b846d129ce0408640e7", size = 9155721, upload-time = "2026-03-09T16:52:07.569Z" },
+    { url = "https://files.pythonhosted.org/packages/e6/b4/86971497407b7412bca4c267c86bd239f75e2e42059cb585fb434ec1a3cf/playa_pdf-1.1.0-cp311-cp311-win_amd64.whl", hash = "sha256:81c7a18284806e80168adff83e2b0cec54a5fa11a01bde189ddc4fd4a4d3c27c", size = 8235890, upload-time = "2026-03-09T16:52:09.805Z" },
+    { url = "https://files.pythonhosted.org/packages/23/da/ab3528bd7496092bb011bd21a48f19496f07ea607660a720186d6e41c733/playa_pdf-1.1.0-cp312-cp312-macosx_10_13_x86_64.whl", hash = "sha256:56dbaccca34dfc0613bec658b67ed67fb0fb4efaf49aab86c60236bfd934ec89", size = 8542589, upload-time = "2026-03-09T16:52:12.368Z" },
+    { url = "https://files.pythonhosted.org/packages/d2/29/cc729b12de1f0ca02e19aed463e42f58836824f6fc5e493bd6c3562e59ba/playa_pdf-1.1.0-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:4ac45f8ac08f8ec17ac834a189772293bc9d52aadb51c3c5eb839fa1c7e79fcb", size = 8524481, upload-time = "2026-03-09T16:52:15.053Z" },
+    { url = "https://files.pythonhosted.org/packages/25/28/7a4a4a0e898dfa45af62452ebe53ce449dac60d67c29cb6ad783e7098a7a/playa_pdf-1.1.0-cp312-cp312-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:0ffa371cfa8e7b8b3f62eb8fa5cd85015095861a20d7d4943971dce7dd15461b", size = 9128263, upload-time = "2026-03-09T16:52:17.33Z" },
+    { url = "https://files.pythonhosted.org/packages/ba/41/56995025d8aabd741974a79edc8518b67db5a46ce33e7852ef7378d0fa90/playa_pdf-1.1.0-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:b27df269246e48946870817b3b7727fcc2e7cf12e605abb4df51efb0af12afee", size = 9219020, upload-time = "2026-03-09T16:52:19.906Z" },
+    { url = "https://files.pythonhosted.org/packages/61/94/65088538e5c218fefb52244f0a23f670378a55baf57af7e86904929adc2c/playa_pdf-1.1.0-cp312-cp312-win_amd64.whl", hash = "sha256:699799f656757aab1fdd923bbd0c4ae5438efa6458c943524a0b9a8e8f5e076b", size = 8238029, upload-time = "2026-03-09T16:52:22.168Z" },
+    { url = "https://files.pythonhosted.org/packages/02/d5/fb9b218f85cf84ec0941e26c5769578189036fcba328cc9eaa795db781eb/playa_pdf-1.1.0-cp313-cp313-macosx_10_13_x86_64.whl", hash = "sha256:c50a79c88e3ed52944f85a694f0d6b5867fbed5d4c9c4a3b84d876858608b854", size = 8541999, upload-time = "2026-03-09T16:52:24.119Z" },
+    { url = "https://files.pythonhosted.org/packages/bf/a6/afc951b706d034e8dbf91250c5c9d81ce12a4af1dfad1c54a2925928be3b/playa_pdf-1.1.0-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:95335f17b96437d55e8e192e9c13f085db9ca84eef608ac706f177d5ade19a23", size = 8523735, upload-time = "2026-03-09T16:52:26.222Z" },
+    { url = "https://files.pythonhosted.org/packages/5b/3c/d36b2e43cfe7f0299da48639b13530cc1735a12da1da2140e1d7bc99f540/playa_pdf-1.1.0-cp313-cp313-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:8b6eed3179d42a5e2db99c33ff931ca89014c2af2d9104a787f6b9079dab4f71", size = 9122951, upload-time = "2026-03-09T16:52:28.455Z" },
+    { url = "https://files.pythonhosted.org/packages/ee/da/6f309f16802cf77883a18390d5e22571922128393cc1533e7d769cfd80e8/playa_pdf-1.1.0-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:783b25ed0e5fa435e488ad11551c897d7c622b9ac8a1376ede6860c28eaf2c11", size = 9212307, upload-time = "2026-03-09T16:52:30.834Z" },
+    { url = "https://files.pythonhosted.org/packages/0d/07/2c1b93ead3d094fa9a5a60817618d815ff6876fc28c04eb7acbd735d5562/playa_pdf-1.1.0-cp313-cp313-win_amd64.whl", hash = "sha256:a786292d382a768ee029ad3461b4ea92df04dea10879ee3f57a11c2388e89746", size = 8237909, upload-time = "2026-03-09T16:52:33.47Z" },
+    { url = "https://files.pythonhosted.org/packages/3c/aa/861f2f855bdb174e21bbe82f924e686346b910cc73c69920bf9a0713c225/playa_pdf-1.1.0-cp314-cp314-macosx_10_15_x86_64.whl", hash = "sha256:50c5dcb8908c94127ccfde1af6490ecdec3ff2865447e36f178c1bdff77e3e8e", size = 8581750, upload-time = "2026-03-09T16:52:35.417Z" },
+    { url = "https://files.pythonhosted.org/packages/48/e2/0e4c84ec682304551676f7e3b7650eaf80cd8fb2c3017346a16267fd6336/playa_pdf-1.1.0-cp314-cp314-macosx_11_0_arm64.whl", hash = "sha256:8827714630de811c35fe79f97b9934b411567d3a3b869a3c0df8704fd0850efd", size = 8521648, upload-time = "2026-03-09T16:52:37.968Z" },
+    { url = "https://files.pythonhosted.org/packages/b1/41/814ac75b62d3fce17ce22f491d093e6d1ee4b813e81bee1763006a4d08b0/playa_pdf-1.1.0-cp314-cp314-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:e43afdc20cde1b77a9b4cb5804d9499d8c6966f34f3348abd4cd0541c591fe83", size = 9138846, upload-time = "2026-03-09T16:52:40.296Z" },
+    { url = "https://files.pythonhosted.org/packages/e7/b3/e88f78d860b5a5d1a45719266af96acefe2a99192227ad1ca0e57e59770b/playa_pdf-1.1.0-cp314-cp314-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:7afcd077ef47ea86455534ecdf692448ceb1af636d2a38583f8e203d252f2d85", size = 9226716, upload-time = "2026-03-09T16:52:42.798Z" },
+    { url = "https://files.pythonhosted.org/packages/54/ef/80b18e577fc4215b6e3382f8f1d804ea8c02f1f608960cd69701f396c109/playa_pdf-1.1.0-cp314-cp314-win_amd64.whl", hash = "sha256:4cd365fd111b1cb2354a6f6ec8da47e9e5d70c5a768fbe9534eee5247c7cacd2", size = 8444577, upload-time = "2026-03-09T16:52:45.062Z" },
+    { url = "https://files.pythonhosted.org/packages/23/22/28dd08a117897deaa41a233a0d1544b4b104f6249e17ae79ba9f5a2083e1/playa_pdf-1.1.0-cp314-cp314t-macosx_10_15_x86_64.whl", hash = "sha256:581a31bdf1bc9961addbd252050d0e9ed38dd1ad223a56c205680e90f7b72575", size = 8653957, upload-time = "2026-03-09T16:52:48.587Z" },
+    { url = "https://files.pythonhosted.org/packages/da/c1/0e39c952d689dc573f298e9aec7166996c8e0da1e2c78d4e6cb13ef5a4f9/playa_pdf-1.1.0-cp314-cp314t-macosx_11_0_arm64.whl", hash = "sha256:457edd5abb9fc43aadcdd812371705851906b1d532a077a6c04981546cda4260", size = 8595523, upload-time = "2026-03-09T16:52:51.203Z" },
+    { url = "https://files.pythonhosted.org/packages/e2/24/5da4532afe99a9c30f23d2366e919b0f6e5e36b624ab5b36354db59445d3/playa_pdf-1.1.0-cp314-cp314t-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:88b7ebf95cd7d02459a26a5a941411258b323f3202e33c13dcc867ae730abc73", size = 9486583, upload-time = "2026-03-09T16:52:53.701Z" },
+    { url = "https://files.pythonhosted.org/packages/8e/9f/7f582cb7cadb5865ffff53f1710e49202436af7bf81fba74f3a9664e7302/playa_pdf-1.1.0-cp314-cp314t-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:e548a7542036f89a622f1c11c2a9c40b8476090b04f3abc335a8dd20142060aa", size = 9588033, upload-time = "2026-03-09T16:52:56.023Z" },
+    { url = "https://files.pythonhosted.org/packages/80/dc/525b0f415c2dc9f23eaec6a858c41ead974f4debe0fce7c2874a5050dea3/playa_pdf-1.1.0-cp314-cp314t-win_amd64.whl", hash = "sha256:c52597802d86fdd61a71a6e7f8e4b48fae51cc5ae38fcc727a14b6d4c075f6bd", size = 8556709, upload-time = "2026-03-09T16:52:58.444Z" },
+]
+
+[[package]]
 name = "pluggy"
 version = "1.6.0"
 source = { registry = "https://pypi.org/simple" }
@@ -2301,8 +2373,11 @@ wheels = [
 
 [[package]]
 name = "pro-ledin-ocr"
-version = "0.5.1"
+version = "0.6.0"
 source = { editable = "." }
+dependencies = [
+    { name = "camelot-py" },
+]
 
 [package.optional-dependencies]
 all = [
@@ -2322,6 +2397,7 @@ cv = [
 dev = [
     { name = "pillow" },
     { name = "pytest" },
+    { name = "reportlab" },
 ]
 easyocr = [
     { name = "easyocr" },
@@ -2346,6 +2422,7 @@ vision = [
 
 [package.metadata]
 requires-dist = [
+    { name = "camelot-py", specifier = ">=2,<3" },
     { name = "easyocr", marker = "extra == 'all'" },
     { name = "easyocr", marker = "extra == 'easyocr'" },
     { name = "numpy", marker = "extra == 'all'" },
@@ -2366,6 +2443,7 @@ requires-dist = [
     { name = "pytesseract", marker = "extra == 'all'" },
     { name = "pytesseract", marker = "extra == 'pytesseract'" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
+    { name = "reportlab", marker = "extra == 'dev'" },
 ]
 provides-extras = ["vision", "pdf", "cv", "pytesseract", "easyocr", "paddle", "paddle-vl", "all", "dev"]
 
@@ -3135,6 +3213,19 @@ wheels = [
 ]
 
 [[package]]
+name = "reportlab"
+version = "5.0.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "charset-normalizer" },
+    { name = "pillow" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/4a/51/dbe28534ae12c852f61be91f039f343305fd1f34f1c66b8de75afae7a525/reportlab-5.0.1.tar.gz", hash = "sha256:ebd13154be1c8515e665de70bd2d303ae9ddc3ef47e44afd5116441ca0283a26", size = 3945711, upload-time = "2026-08-20T13:48:16.461Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/db/cb/dacbc268cb68d0428ea2cbd85266195a9ab3e677449589ddae59bd7542ac/reportlab-5.0.1-py3-none-any.whl", hash = "sha256:1c36e6bb0e71780c72331eba60da7f602e8d4389a8723825af71342e49d791e8", size = 1957258, upload-time = "2026-08-20T13:48:14.026Z" },
+]
+
+[[package]]
 name = "requests"
 version = "2.34.2"
 source = { registry = "https://pypi.org/simple" }
@@ -3232,12 +3323,12 @@ version = "0.26.0"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
     "python_full_version >= '3.14' and sys_platform == 'darwin'",
-    "python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform == 'darwin'",
     "python_full_version >= '3.14' and platform_machine == 'aarch64' and sys_platform == 'linux'",
-    "python_full_version >= '3.12' and python_full_version < '3.14' and platform_machine == 'aarch64' and sys_platform == 'linux'",
     "python_full_version >= '3.14' and sys_platform == 'win32'",
     "python_full_version >= '3.14' and sys_platform == 'emscripten'",
     "(python_full_version >= '3.14' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version >= '3.14' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'linux' and sys_platform != 'win32')",
+    "python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform == 'darwin'",
+    "python_full_version >= '3.12' and python_full_version < '3.14' and platform_machine == 'aarch64' and sys_platform == 'linux'",
     "python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform == 'win32'",
     "python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform == 'emscripten'",
     "(python_full_version >= '3.12' and python_full_version < '3.14' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'linux' and sys_platform != 'win32')",
@@ -3366,12 +3457,12 @@ version = "1.9.0"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
     "python_full_version >= '3.14' and sys_platform == 'darwin'",
-    "python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform == 'darwin'",
     "python_full_version >= '3.14' and platform_machine == 'aarch64' and sys_platform == 'linux'",
-    "python_full_version >= '3.12' and python_full_version < '3.14' and platform_machine == 'aarch64' and sys_platform == 'linux'",
     "python_full_version >= '3.14' and sys_platform == 'win32'",
     "python_full_version >= '3.14' and sys_platform == 'emscripten'",
     "(python_full_version >= '3.14' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version >= '3.14' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'linux' and sys_platform != 'win32')",
+    "python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform == 'darwin'",
+    "python_full_version >= '3.12' and python_full_version < '3.14' and platform_machine == 'aarch64' and sys_platform == 'linux'",
     "python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform == 'win32'",
     "python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform == 'emscripten'",
     "(python_full_version >= '3.12' and python_full_version < '3.14' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'linux' and sys_platform != 'win32')",
@@ -3568,12 +3659,12 @@ version = "1.18.0"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
     "python_full_version >= '3.14' and sys_platform == 'darwin'",
-    "python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform == 'darwin'",
     "python_full_version >= '3.14' and platform_machine == 'aarch64' and sys_platform == 'linux'",
-    "python_full_version >= '3.12' and python_full_version < '3.14' and platform_machine == 'aarch64' and sys_platform == 'linux'",
     "python_full_version >= '3.14' and sys_platform == 'win32'",
     "python_full_version >= '3.14' and sys_platform == 'emscripten'",
     "(python_full_version >= '3.14' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version >= '3.14' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'linux' and sys_platform != 'win32')",
+    "python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform == 'darwin'",
+    "python_full_version >= '3.12' and python_full_version < '3.14' and platform_machine == 'aarch64' and sys_platform == 'linux'",
     "python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform == 'win32'",
     "python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform == 'emscripten'",
     "(python_full_version >= '3.12' and python_full_version < '3.14' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'linux' and sys_platform != 'win32')",
@@ -3798,6 +3889,15 @@ wheels = [
 ]
 
 [[package]]
+name = "tabulate"
+version = "0.10.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/46/58/8c37dea7bbf769b20d58e7ace7e5edfe65b849442b00ffcdd56be88697c6/tabulate-0.10.0.tar.gz", hash = "sha256:e2cfde8f79420f6deeffdeda9aaec3b6bc5abce947655d17ac662b126e48a60d", size = 91754, upload-time = "2026-03-04T18:55:34.402Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/99/55/db07de81b5c630da5cbf5c7df646580ca26dfaefa593667fc6f2fe016d2e/tabulate-0.10.0-py3-none-any.whl", hash = "sha256:f0b0622e567335c8fabaaa659f1b33bcb6ddfe2e496071b743aa113f8774f2d3", size = 39814, upload-time = "2026-03-04T18:55:31.284Z" },
+]
+
+[[package]]
 name = "threadpoolctl"
 version = "3.6.0"
 source = { registry = "https://pypi.org/simple" }
@@ -3848,12 +3948,12 @@ version = "2026.7.14"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
     "python_full_version >= '3.14' and sys_platform == 'darwin'",
-    "python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform == 'darwin'",
     "python_full_version >= '3.14' and platform_machine == 'aarch64' and sys_platform == 'linux'",
-    "python_full_version >= '3.12' and python_full_version < '3.14' and platform_machine == 'aarch64' and sys_platform == 'linux'",
     "python_full_version >= '3.14' and sys_platform == 'win32'",
     "python_full_version >= '3.14' and sys_platform == 'emscripten'",
     "(python_full_version >= '3.14' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version >= '3.14' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'linux' and sys_platform != 'win32')",
+    "python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform == 'darwin'",
+    "python_full_version >= '3.12' and python_full_version < '3.14' and platform_machine == 'aarch64' and sys_platform == 'linux'",
     "python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform == 'win32'",
     "python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform == 'emscripten'",
     "(python_full_version >= '3.12' and python_full_version < '3.14' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'linux' and sys_platform != 'win32')",

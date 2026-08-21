@@ -4,14 +4,14 @@ build-backend = "hatchling.build"
 
 [project]
 name = "pro-ledin-ocr"
-version = "0.5.1"
-description = "Layered OCR workhorse: extract text from scanned PDFs and images (tesseract, PyMuPDF, easyocr, paddleocr, vision)."
+version = "0.6.0"
+description = "Layered OCR and text-PDF table extraction for PDFs and images."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "mxl" }]
-keywords = ["ocr", "pdf", "tesseract", "vision", "text-extraction", "cyrillic"]
+keywords = ["ocr", "pdf", "tables", "camelot", "tesseract", "vision", "text-extraction", "cyrillic"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Environment :: Console",
@@ -24,7 +24,7 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Image Recognition",
     "Topic :: Text Processing",
 ]
-dependencies = []
+dependencies = ["camelot-py>=2,<3"]
 
 [project.optional-dependencies]
 vision = ["openai>=1.0"]
@@ -35,7 +35,7 @@ easyocr = ["easyocr"]
 paddle = ["paddleocr>=3.7", "paddlepaddle>=3.2.1"]
 paddle-vl = ["paddleocr[doc-parser]>=3.7", "paddlepaddle>=3.2.1"]
 all = ["openai>=1.0", "pymupdf", "opencv-python", "numpy", "pytesseract", "easyocr", "paddleocr[doc-parser]>=3.7", "paddlepaddle>=3.2.1"]
-dev = ["pytest>=8.0", "pillow"]
+dev = ["pytest>=8.0", "pillow", "reportlab"]
 
 [project.scripts]
 ocr = "pro.ledin.ocr.cli:main"

@@ -2,9 +2,11 @@
 
 [![skills.sh](https://skills.sh/b/ledin-pro/ocr)](https://skills.sh/ledin-pro/ocr)
 
-Layered OCR workhorse for scanned PDFs and images (PNG/JPG/TIFF/HEIC/WEBP).
-Baseline OCR uses Poppler and Tesseract; EasyOCR, PaddleOCR, structured
-PaddleOCR-VL over MLX, and automated vision are opt-in engines.
+Layered extraction for text PDFs, scanned PDFs, and images
+(PNG/JPG/TIFF/HEIC/WEBP). Readable PDF text layers are extracted directly and
+tables are reconstructed with Camelot. Scans use Poppler and Tesseract;
+EasyOCR, PaddleOCR, structured PaddleOCR-VL over MLX, and automated vision are
+opt-in engines.
 
 - Import name: `pro.ledin.ocr`
 - Console scripts: `ocr`, `peepshow-sink-ocr`
@@ -14,7 +16,7 @@ PaddleOCR-VL over MLX, and automated vision are opt-in engines.
 ## Install
 
 ```bash
-pip install pro-ledin-ocr             # baseline
+pip install pro-ledin-ocr             # baseline, including Camelot tables
 pip install "pro-ledin-ocr[easyocr]" # EasyOCR
 pip install "pro-ledin-ocr[paddle]"  # PaddleOCR
 pip install "pro-ledin-ocr[paddle-vl]" # PaddleOCR-VL document parser client
@@ -38,6 +40,9 @@ Windows and engine-specific setup: [`skills/ocr/references/engine-setup.md`](ski
 ocr myfile.pdf --probe                         # triage only; NDJSON result
 ocr myfile.pdf --format md,json                # multiple formats to stdout
 ocr myfile.pdf --format md,txt,json --out results/
+ocr report.pdf --table-flavor lattice            # ruled tables
+ocr report.pdf --table-flavor stream             # borderless tables
+ocr report.pdf --no-tables                        # legacy linear text
 ocr scan.png --format md
 ocr russian_doc.pdf --lang rus+eng --format md
 ocr scan.pdf --preprocess full
@@ -60,6 +65,13 @@ Engine resolution is explicit: `--engine` overrides `OCR_ENGINE`, otherwise
 `easyocr`, `paddleocr`, `paddleocr-vl-mlx`, and `vision`. The MLX engine runs
 full layout parsing inside `PaddleOCRVL`; its loopback service handles only the
 VLM stage and must not receive document images directly.
+
+For readable text PDFs, table extraction is a native pre-OCR stage rather than
+an OCR engine. It is enabled by default. Camelot `auto` is attempted first and
+non-stream page results are compared with a `stream` candidate. Override with
+`--table-flavor lattice|stream|network|hybrid`, or disable with `--no-tables`.
+The `ml` flavor is intentionally unsupported because this path must not require
+a visual model.
 
 `--auto-escalate` overrides `OCR_AUTO_ESCALATE`. Both accept an ordered,
 comma-separated chain such as `easyocr,vision`. OCR validates every dependency
@@ -93,6 +105,13 @@ multiple inputs requires `--out`; `--searchable-pdf` accepts one input.
 `--format md,json --out results/` for multiple files. One invocation cannot mix
 stdout format with independently named JSON sidecar.
 
+Markdown replaces accepted table regions with pipe tables. Complex or spanning
+grids use HTML tables inside Markdown; uncertain spans are flattened and marked
+with `table_spans_flattened`. Plain-text output remains the original linear text.
+JSON pages add a `tables` array containing normalized rows, bbox, Camelot flavor,
+parsing metrics, validation coverage, rendered representation, and issues.
+Rejected candidates never replace source text.
+
 ## Peepshow sink
 
 `peepshow-sink-ocr` reads peepshow JSON from stdin, recognizes primary frames,
@@ -121,6 +140,8 @@ pages = ocr.recognize(
         vision_api_key="key",
         vision_model="model",
         vision_prompt="Preserve checkbox states and labels.",
+        extract_tables=True,
+        table_flavor="auto",
     ),
 )
 markdown = ocr.to_markdown(pages, "scan.pdf")
@@ -192,7 +213,7 @@ capability dump is a CLI diagnostic (`ocr -v`); library callers opt in with
 
 | Tier | Engine | Best for | Cost |
 |---|---|---|---|
-| 0 | pdftotext / PyMuPDF | Real text layers | Free, instant |
+| 0 | Text layer + Camelot | Real text layers and native tables | Free, local |
 | 1 | tesseract (default) | Clean scans and typed text | Free |
 | 2 | easyocr | Handwriting and degraded scans | Free, heavy |
 | 2.5 | paddleocr | CJK, multilingual, angled text | Free, heavy |

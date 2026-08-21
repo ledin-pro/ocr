@@ -164,9 +164,39 @@ current multimodal agent and does not act as automated escalation engine.
 
 ## Tables are jumbled
 
-Tesseract preserves words, not table structure. Preferred approved rerun:
+First determine whether the PDF has a readable text layer.
+
+For a text PDF, Camelot runs automatically. Try one targeted parser override:
 
 ```bash
+# Explicit rules
+ocr FILE --table-flavor lattice --pages 2,5 --format md,json --out results/
+
+# Borderless alignment
+ocr FILE --table-flavor stream --pages 2,5 --format md,json --out results/
+```
+
+Inspect JSON table fields: `accepted`, `flavor`, `accuracy`, `confidence`,
+`text_coverage`, `numeric_coverage`, and `issues`. A rejected candidate leaves
+the original linear text intact. `table_parse_quality_low`,
+`table_text_coverage_low`, or `table_numeric_coverage_low` explains rejection.
+
+Use `--no-tables` to compare against legacy linear text:
+
+```bash
+ocr FILE --no-tables --pages 2,5 --format md
+```
+
+Do not use vision for a selectable text PDF solely because columns are wrong.
+
+For a scanned table, Tesseract preserves words but not table structure. Use
+local PaddleOCR-VL or approved vision:
+
+```bash
+ocr FILE --engine paddleocr-vl-mlx --pages 2,5 --format md \
+  --paddle-vl-server-url http://127.0.0.1:8111/ \
+  --paddle-vl-model PaddlePaddle/PaddleOCR-VL-1.6
+
 ocr FILE --engine vision --pages 2,5 \
   --vision-api-key "$KEY" --vision-model MODEL \
   --vision-prompt "Return Markdown tables; preserve empty cells"
@@ -174,6 +204,16 @@ ocr FILE --engine vision --pages 2,5 \
 
 For simple dense blocks, try `--psm 6`. For interactive inspection, use handoff
 module.
+
+## Camelot is missing or fails to import
+
+Camelot is a baseline dependency. A missing import indicates an incomplete or
+broken `pro-ledin-ocr` installation rather than an optional engine.
+
+Reinstall the package in its owning Python environment after approval, then
+verify `python -c 'import camelot; print(camelot.__version__)'`. Runtime parse
+failures degrade to ordinary text and add `table_extraction_failed`; they do not
+send the document to vision automatically.
 
 ## Charts lack meaningful values
 

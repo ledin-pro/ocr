@@ -64,6 +64,19 @@ class FormatParsing(unittest.TestCase):
                 "scan.png", "--json-report", "report.json"
             ])
 
+    def test_tables_are_enabled_by_default(self):
+        args = cli.build_parser().parse_args(["report.pdf"])
+        self.assertTrue(args.tables)
+        self.assertEqual(args.table_flavor, "auto")
+
+    def test_no_tables_disables_extraction(self):
+        args = cli.build_parser().parse_args(["report.pdf", "--no-tables"])
+        self.assertFalse(args.tables)
+
+    def test_table_flavor_is_validated(self):
+        with self.assertRaises(SystemExit):
+            cli.build_parser().parse_args(["report.pdf", "--table-flavor", "ml"])
+
 
 class WriteOutputs(unittest.TestCase):
     def args(
@@ -193,6 +206,20 @@ class WriteOutputs(unittest.TestCase):
 
 
 class OutputArgumentValidation(unittest.TestCase):
+    def test_table_options_reach_recognize_options(self):
+        with tempfile.NamedTemporaryFile(suffix=".pdf") as source:
+            with mock.patch.object(cli, "process_file", return_value=page_result()) as process:
+                with mock.patch.object(cli, "write_outputs"):
+                    cli.run([
+                        source.name,
+                        "--no-tables",
+                        "--table-flavor",
+                        "network",
+                    ])
+        options = process.call_args.args[1]
+        self.assertFalse(options.extract_tables)
+        self.assertEqual(options.table_flavor, "network")
+
     def test_duplicate_stems_are_rejected_before_processing(self):
         with mock.patch.object(cli, "process_file") as process:
             with self.assertRaises(SystemExit):

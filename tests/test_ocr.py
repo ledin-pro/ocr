@@ -163,6 +163,192 @@ class PaddleOCRVLMarkdown(unittest.TestCase):
         self.assertIn("| 1 |", markdown)
 
 
+class TextPdfTables(unittest.TestCase):
+    def _write_ruled_pdf(self, path):
+        from reportlab.lib.pagesizes import letter
+        from reportlab.pdfgen import canvas
+
+        document = canvas.Canvas(path, pagesize=letter)
+        for x in (50, 200, 300, 400):
+            document.line(x, 650, x, 750)
+        for y in (650, 680, 715, 750):
+            document.line(50, y, 400, y)
+        for x, y, text in (
+            (60, 730, "Test"),
+            (210, 730, "Result"),
+            (310, 730, "Unit"),
+            (60, 695, "ALT"),
+            (210, 695, "35.5"),
+            (310, 695, "U/L"),
+            (60, 660, "AST"),
+            (210, 660, "29.3"),
+            (310, 660, "U/L"),
+        ):
+            document.drawString(x, y, text)
+        document.save()
+
+    def test_pipe_table_escapes_cells(self):
+        rendered = ocr._render_pipe_table([["Name", "Value"], ["A|B", "one\ntwo"]])
+        self.assertIn("A\\|B", rendered)
+        self.assertIn("one<br>two", rendered)
+
+    def test_complex_table_uses_html(self):
+        rendered = ocr._render_html_table([["Name", "Value"], ["ALT", "35.5"]])
+        self.assertIn("<table>", rendered)
+        self.assertIn("<th>Name</th>", rendered)
+        self.assertIn("<td>35.5</td>", rendered)
+
+    def test_camelot_bbox_is_converted_to_top_left_coordinates(self):
+        self.assertEqual(
+            ocr._normalize_camelot_bbox([10, 20, 30, 80], 100),
+            [10, 20, 30, 80],
+        )
+
+    def test_markdown_composition_preserves_text_table_text_order(self):
+        blocks = [
+            {"bbox": [0, 0, 100, 10], "text": "Before"},
+            {"bbox": [0, 20, 100, 30], "text": "duplicate table text"},
+            {"bbox": [0, 40, 100, 50], "text": "After"},
+        ]
+        tables = [{
+            "bbox": [0, 15, 100, 35],
+            "rendered": "| A | B |\n| --- | --- |\n| 1 | 2 |",
+            "accepted": True,
+        }]
+        rendered = ocr._compose_page_markdown(blocks, tables)
+        self.assertLess(rendered.index("Before"), rendered.index("| A | B |"))
+        self.assertLess(rendered.index("| A | B |"), rendered.index("After"))
+        self.assertNotIn("duplicate table text", rendered)
+
+    def test_numeric_coverage_rejects_lost_value(self):
+        table = {
+            "rows": [["Test", "Result"], ["ALT", "35.5"]],
+            "bbox": [0, 0, 200, 100],
+            "issues": [],
+        }
+        blocks = [{"bbox": [0, 0, 200, 100], "text": "ALT 35.5 AST 29.3"}]
+        issues = ocr._validate_table(table, blocks)
+        self.assertIn("table_numeric_coverage_low", issues)
+
+    def test_recognize_formats_text_pdf_table_without_changing_text(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "table.pdf")
+            self._write_ruled_pdf(path)
+            pages = ocr.recognize(path, ocr.RecognizeOptions())
+        self.assertEqual(len(pages), 1)
+        self.assertIn("ALT", pages[0]["text"])
+        self.assertEqual(len(pages[0]["tables"]), 1)
+        self.assertTrue(pages[0]["tables"][0]["accepted"])
+        self.assertIn("| Test | Result | Unit |", pages[0]["markdown"])
+        self.assertEqual(pages[0]["markdown"].count("ALT"), 1)
+
+    def test_no_tables_preserves_original_fast_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "table.pdf")
+            self._write_ruled_pdf(path)
+            with mock.patch.object(ocr, "extract_text_pdf_tables") as extract:
+                pages = ocr.recognize(
+                    path,
+                    ocr.RecognizeOptions(extract_tables=False),
+                )
+        extract.assert_not_called()
+        self.assertNotIn("markdown", pages[0])
+        self.assertEqual(pages[0]["tables"], [])
+
+    def test_camelot_failure_preserves_text(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "table.pdf")
+            self._write_ruled_pdf(path)
+            with mock.patch.object(
+                ocr,
+                "extract_text_pdf_tables",
+                side_effect=RuntimeError("broken parser"),
+            ):
+                pages = ocr.recognize(path, ocr.RecognizeOptions())
+        self.assertIn("ALT", pages[0]["text"])
+        self.assertIn("table_extraction_failed", pages[0]["issues"])
+
+    def test_workflow_cache_key_includes_table_options(self):
+        with tempfile.NamedTemporaryFile(suffix=".pdf") as source:
+            enabled = ocr._workflow_cache_key(
+                source.name,
+                ocr.RecognizeOptions(extract_tables=True),
+            )
+            disabled = ocr._workflow_cache_key(
+                source.name,
+                ocr.RecognizeOptions(extract_tables=False),
+            )
+            lattice = ocr._workflow_cache_key(
+                source.name,
+                ocr.RecognizeOptions(table_flavor="lattice"),
+            )
+        self.assertNotEqual(enabled, disabled)
+        self.assertNotEqual(enabled, lattice)
+
+    def test_auto_falls_back_to_stream_for_page_without_usable_grid(self):
+        calls = []
+
+        class Values:
+            def __init__(self, rows):
+                self._rows = rows
+
+            def tolist(self):
+                return self._rows
+
+        class Frame:
+            def __init__(self, rows):
+                self.values = Values(rows)
+
+        def table(rows, flavor):
+            return types.SimpleNamespace(
+                df=Frame(rows),
+                page=1,
+                flavor=flavor,
+                _bbox=(0, 0, 100, 100),
+                parsing_report={"page": 1, "accuracy": 100, "confidence": 1},
+                cells=[],
+            )
+
+        fake_camelot = types.ModuleType("camelot")
+
+        def read_pdf(path, pages, flavor):
+            calls.append(flavor)
+            if flavor == "auto":
+                return [table([["one"], ["two"]], "network")]
+            return [table([["A", "B"], ["1", "2"]], "stream")]
+
+        fake_camelot.read_pdf = read_pdf
+        with mock.patch.dict(sys.modules, {"camelot": fake_camelot}):
+            result = ocr.extract_text_pdf_tables("report.pdf", [1], "auto")
+        self.assertEqual(calls, ["auto", "stream"])
+        self.assertEqual(len(result[1]), 2)
+
+    def test_malformed_camelot_metrics_are_treated_as_missing(self):
+        class Values:
+            def tolist(self):
+                return [["A", "B"], ["1", "2"]]
+
+        table = types.SimpleNamespace(
+            df=types.SimpleNamespace(values=Values()),
+            page=1,
+            flavor="lattice",
+            _bbox=(0, 0, 100, 100),
+            parsing_report={
+                "page": 1,
+                "accuracy": "unknown",
+                "confidence": {},
+                "whitespace": [],
+            },
+            cells=[],
+        )
+        fake_camelot = types.ModuleType("camelot")
+        fake_camelot.read_pdf = lambda path, pages, flavor: [table]
+        with mock.patch.dict(sys.modules, {"camelot": fake_camelot}):
+            result = ocr.extract_text_pdf_tables("report.pdf", [1], "lattice")
+        self.assertIsNone(result[1][0]["accuracy"])
+        self.assertIsNone(result[1][0]["confidence"])
+
+
 class ResolveVisionConfig(unittest.TestCase):
     def test_ok(self):
         key, model, endpoint = ocr.resolve_vision_config(

@@ -1,21 +1,22 @@
 ---
 name: ocr
 description: >
-  Extract text from scanned PDFs and images (PNG/JPG/TIFF/HEIC) using OCR. Use
-  this skill whenever a PDF's text cannot be selected or copied, the document is
-  a scan or photo, text is rendered as images rather than a selectable layer, or
-  the file is a receipt, screenshot, fax, ID card, form, or presentation slide
-  image. Also use for non-English and Cyrillic scans, when pdftotext or pypdf
-  return empty or garbled output, or when the user says a PDF has no text.
-  Handles language detection, preprocessing, strict engine escalation, tables
-  and charts through automated vision or interactive handoff, and Markdown,
-  plain-text, and JSON output.
+  Extract text and tables from text-based PDFs, scanned PDFs, and images
+  (PNG/JPG/TIFF/HEIC). Use this skill for PDF-to-Markdown extraction, selectable
+  PDF tables, scans or photos, receipts, screenshots, faxes, IDs, forms, and
+  presentation slides. Also use for non-English and Cyrillic documents, empty or
+  garbled PDF text, and image-only PDFs. Handles native Camelot table extraction,
+  language detection, preprocessing, strict OCR engine escalation, charts and
+  scanned tables through layout OCR or approved vision, and Markdown, plain-text,
+  and JSON output.
 ---
 
 # OCR Skill
 
-Use one initial OCR command. Let configured escalation chain handle flagged
-pages. Do not probe first unless user asks for triage-only result.
+Use one initial `ocr` command. Readable text PDFs automatically use native text
+and Camelot table extraction; scans use the selected OCR engine. Let configured
+escalation chain handle flagged OCR pages. Do not probe first unless user asks
+for a triage-only result.
 
 ## Initial command
 
@@ -34,6 +35,30 @@ separate probe executable exists. Each object reports `needs_ocr`, the
 `text_layer_rejected` flag, `readability` scores, and a human-readable `reason`.
 A dense but unreadable embedded text layer (broken/`ToUnicode`-less fonts) is
 rejected and routed to OCR rather than emitting glyph soup.
+
+## Native text-PDF tables
+
+Camelot is a local text-PDF stage, not an OCR engine. It runs automatically only
+after the PDF probe accepts the embedded text layer. It never receives rendered
+page images and does not call a model or external service.
+
+- Default: `--tables --table-flavor auto`.
+- `auto` compares classic auto-detection with a Camelot `stream` candidate.
+- Use `lattice` for ruled tables.
+- Use `stream` or `network` for borderless aligned tables.
+- Use `hybrid` when line and alignment cues are mixed.
+- `ml` is unsupported because native table extraction must remain model-free.
+- Use `--no-tables` only for legacy linear-text output or diagnosis.
+
+Accepted table regions replace their linear text in Markdown, preventing
+duplication. TXT keeps the original text layer. JSON includes normalized table
+rows, bbox, parser metrics, validation coverage, rendered output, and issues.
+Simple grids use pipe Markdown; complex grids use HTML inside Markdown. A
+rejected candidate preserves source text and records why it was rejected.
+
+Do not reroute a selectable text PDF to vision merely because it contains a
+table. Vision or PaddleOCR-VL is appropriate only when the page is a scan, the
+text layer is rejected, or native extraction cannot access the visual structure.
 
 ## Engine and escalation resolution
 
@@ -102,18 +127,20 @@ Optional helper failures are fallback conditions, not fatal requirements:
 
 1. Run one initial command with requested formats, language, pages, or existing
    escalation configuration.
-2. If command succeeds, use output and report escalation decisions. Do not run
+2. For a readable text PDF, use the automatic Camelot result. If a user reports
+   wrong columns, obtain approval for one targeted rerun with `--table-flavor`.
+3. If command succeeds, use output and report escalation decisions. Do not run
    speculative second pass.
-3. If no escalation is configured and report flags pages, inspect reasons. Ask
+4. If no escalation is configured and report flags OCR pages, inspect reasons. Ask
    approval for one targeted rerun, then rerun only flagged pages with selected
    engine or preprocessing change.
-4. If user-selected engine or escalation dependency is missing, detect platform
+5. If user-selected engine or escalation dependency is missing, detect platform
    before proposing install: OS/version, architecture, Python version/bitness,
    and GPU/vendor/driver/CUDA where relevant.
-5. Propose exact platform-specific commands from `references/engine-setup.md`.
+6. Propose exact platform-specific commands from `references/engine-setup.md`.
    State package downloads, model downloads, disk/network impact, and GPU/CPU
    choice. Request approval before installing anything.
-6. After approval, install only requested dependency, verify executable/import,
+7. After approval, install only requested dependency, verify executable/import,
    language/model availability, and GPU visibility where applicable. Rerun same
    failed OCR command. If verification fails, stop and report exact failure.
 
@@ -174,6 +201,8 @@ persistent image paths and prompt; agent reads images and returns faithful text.
 ```bash
 ocr scan.png --format md,txt,json --out results/
 ocr russian.pdf --lang rus+eng --format md
+ocr report.pdf --table-flavor lattice --format md,json --out results/
+ocr report.pdf --no-tables --format md
 ocr scan.pdf --preprocess full --format md
 ocr report.pdf --probe
 ocr FILE1 FILE2 --cache ocr-cache.json --format txt --out results/
@@ -186,7 +215,7 @@ ocr FILE --searchable-pdf searchable.pdf
 |---|---|
 | `--format md` | Markdown with page headings |
 | `--format txt` | Plain text with page separators |
-| `--format json` | Page text, confidence, boxes, flags, decisions |
+| `--format json` | Page text, tables, confidence, boxes, flags, decisions |
 | `--format md,json` | Requested comma-separated formats |
 | `--format all` | `md,txt,json` shorthand |
 | `--searchable-pdf OUT` | Original PDF with invisible text layer |
@@ -223,6 +252,8 @@ pages = ocr.recognize(
         auto_escalate=("easyocr", "vision"),
         vision_api_key="key",
         vision_model="model",
+        extract_tables=True,
+        table_flavor="auto",
     ),
 )
 markdown = ocr.to_markdown(pages, "scan.pdf")

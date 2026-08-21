@@ -23,6 +23,7 @@ from .core import (
     DEFAULT_PSM,
     OcrError,
     RecognizeOptions,
+    TABLE_FLAVORS,
     _log,
     classify_input,
     probe_input,
@@ -205,7 +206,7 @@ def write_outputs(
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="ocr",
-        description="Extract text from scanned PDFs and images using layered OCR.",
+        description="Extract text and tables from PDFs and images using layered OCR.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -213,6 +214,8 @@ Examples:
   ocr photo.jpg --format md
   ocr doc.pdf --lang rus+eng --preprocess full --format all
   ocr report.pdf --probe
+  ocr report.pdf --table-flavor lattice
+  ocr report.pdf --no-tables
   ocr table.png --engine vision --vision-prompt-file table-prompt.txt
   ocr *.pdf --cache cache.json --format txt
         """,
@@ -255,6 +258,18 @@ Examples:
                    help="Ignore cache and re-process all files")
     p.add_argument("--skip-ocr", action="store_true",
                    help="Only process files with a real text layer; skip OCR")
+    p.add_argument(
+        "--tables",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Extract tables from readable text PDFs with Camelot (default: enabled)",
+    )
+    p.add_argument(
+        "--table-flavor",
+        choices=TABLE_FLAVORS,
+        default="auto",
+        help="Camelot parser for text-PDF tables (default: auto)",
+    )
     p.add_argument(
         "--auto-escalate",
         type=parse_engines,
@@ -449,6 +464,8 @@ def run(argv: list[str] | None = None) -> None:
         verbose=args.verbose,
         auto_escalate=args.auto_escalate,
         skip_ocr=args.skip_ocr,
+        extract_tables=args.tables,
+        table_flavor=args.table_flavor,
     )
 
     caps = Caps(verbose=args.verbose, report=args.verbose)

@@ -15,7 +15,7 @@ is Python module `python -m pro.ledin.ocr.vision_handoff`, not sink engine.
 | `easyocr` | `pro-ledin-ocr[easyocr]` and downloaded models |
 | `paddleocr` | `pro-ledin-ocr[paddle]`, matching PaddlePaddle runtime, models |
 | `paddleocr-vl-mlx` | `pro-ledin-ocr[paddle-vl]`, loopback MLX-VLM service, model ID |
-| `vision` | `pro-ledin-ocr[vision]`, endpoint key and model |
+| `vision` | `pro-ledin-ocr`, endpoint key and model |
 
 Default sink engine is `tesseract`. There is no `auto` engine. Poppler is not
 needed because peepshow supplies image frames. Missing baseline or escalation

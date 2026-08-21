@@ -2373,17 +2373,17 @@ wheels = [
 
 [[package]]
 name = "pro-ledin-ocr"
-version = "0.6.0"
+version = "0.6.1"
 source = { editable = "." }
 dependencies = [
     { name = "camelot-py" },
+    { name = "openai" },
 ]
 
 [package.optional-dependencies]
 all = [
     { name = "easyocr" },
     { name = "numpy" },
-    { name = "openai" },
     { name = "opencv-python" },
     { name = "paddleocr", extra = ["doc-parser"] },
     { name = "paddlepaddle" },
@@ -2416,9 +2416,6 @@ pdf = [
 pytesseract = [
     { name = "pytesseract" },
 ]
-vision = [
-    { name = "openai" },
-]
 
 [package.metadata]
 requires-dist = [
@@ -2427,8 +2424,7 @@ requires-dist = [
     { name = "easyocr", marker = "extra == 'easyocr'" },
     { name = "numpy", marker = "extra == 'all'" },
     { name = "numpy", marker = "extra == 'cv'" },
-    { name = "openai", marker = "extra == 'all'", specifier = ">=1.0" },
-    { name = "openai", marker = "extra == 'vision'", specifier = ">=1.0" },
+    { name = "openai", specifier = ">=1.0" },
     { name = "opencv-python", marker = "extra == 'all'" },
     { name = "opencv-python", marker = "extra == 'cv'" },
     { name = "paddleocr", marker = "extra == 'paddle'", specifier = ">=3.7" },
@@ -2445,7 +2441,7 @@ requires-dist = [
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
     { name = "reportlab", marker = "extra == 'dev'" },
 ]
-provides-extras = ["vision", "pdf", "cv", "pytesseract", "easyocr", "paddle", "paddle-vl", "all", "dev"]
+provides-extras = ["pdf", "cv", "pytesseract", "easyocr", "paddle", "paddle-vl", "all", "dev"]
 
 [[package]]
 name = "propcache"

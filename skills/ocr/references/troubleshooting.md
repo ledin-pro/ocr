@@ -136,8 +136,9 @@ vision engine name are invalid.
 
 ## Automated vision configuration error
 
-Automated engine is `vision` and requires installed vision extra, explicit key,
-and explicit model:
+Automated engine is `vision` and requires the base package's OpenAI client, a
+key, and a model. Configure the key and model with CLI flags or `OCR_VISION_*`
+environment variables:
 
 ```bash
 ocr FILE --engine vision \

@@ -247,7 +247,7 @@ currently reports accuracy and speed verification only on M4.
 ## Automated vision
 
 ```bash
-python -m pip install "pro-ledin-ocr[vision]"
+python -m pip install pro-ledin-ocr
 python -c "import openai; print(openai.__version__)"
 ```
 

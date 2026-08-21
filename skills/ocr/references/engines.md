@@ -9,7 +9,7 @@
 | 2 | `easyocr` | Handwriting, degraded scans | 80+ | `pro-ledin-ocr[easyocr]`, models |
 | 2.5 | `paddleocr` | CJK, multilingual, angled text | 100+ | `pro-ledin-ocr[paddle]`, PaddlePaddle, models |
 | 2.75 | `paddleocr-vl-mlx` | Tables and document layout on Apple Silicon | Model-supported | `pro-ledin-ocr[paddle-vl]`, loopback MLX-VLM service |
-| 3 | `vision` | Tables, charts, forms, complex layout | Any model-supported language | `pro-ledin-ocr[vision]`, key, model |
+| 3 | `vision` | Tables, charts, forms, complex layout | Any model-supported language | `pro-ledin-ocr`, key, model |
 | Handoff | `python -m pro.ledin.ocr.vision_handoff` | Current multimodal agent reads selected pages | Model-dependent | Image-capable agent |
 
 Engine resolution: `--engine` > `OCR_ENGINE` > `tesseract`. Valid values are
@@ -219,9 +219,9 @@ detected by spec; failed import falls back to Tesseract CLI.
 
 ## Automated vision
 
-`ocr --engine vision` sends rendered pages to OpenAI-compatible vision endpoint
-with high-detail image input. Install `pro-ledin-ocr[vision]`. Model and API key
-are required; endpoint URL is optional:
+`ocr --engine vision` sends rendered pages to an OpenAI-compatible vision endpoint
+with high-detail image input. The base `pro-ledin-ocr` package includes the
+OpenAI client. Model and API key are required; endpoint URL is optional:
 
 ```bash
 ocr FILE --engine vision \

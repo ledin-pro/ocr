@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "pro-ledin-ocr"
-version = "0.6.0"
+version = "0.6.1"
 description = "Layered OCR and text-PDF table extraction for PDFs and images."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -24,17 +24,16 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Image Recognition",
     "Topic :: Text Processing",
 ]
-dependencies = ["camelot-py>=2,<3"]
+dependencies = ["camelot-py>=2,<3", "openai>=1.0"]
 
 [project.optional-dependencies]
-vision = ["openai>=1.0"]
 pdf = ["pymupdf"]
 cv = ["opencv-python", "numpy"]
 pytesseract = ["pytesseract"]
 easyocr = ["easyocr"]
 paddle = ["paddleocr>=3.7", "paddlepaddle>=3.2.1"]
 paddle-vl = ["paddleocr[doc-parser]>=3.7", "paddlepaddle>=3.2.1"]
-all = ["openai>=1.0", "pymupdf", "opencv-python", "numpy", "pytesseract", "easyocr", "paddleocr[doc-parser]>=3.7", "paddlepaddle>=3.2.1"]
+all = ["pymupdf", "opencv-python", "numpy", "pytesseract", "easyocr", "paddleocr[doc-parser]>=3.7", "paddlepaddle>=3.2.1"]
 dev = ["pytest>=8.0", "pillow", "reportlab"]
 
 [project.scripts]

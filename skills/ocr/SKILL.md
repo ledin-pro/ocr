@@ -236,7 +236,7 @@ peepshow video.mp4 \
 
 Sink supports same non-interactive engines and strict escalation through
 `--auto-escalate` or `PEEPSHOW_SINK_OCR_AUTO_ESCALATE`. Automated `vision`
-requires `pro-ledin-ocr[vision]`, key, and model. Interactive handoff is outside
+uses the base package's OpenAI client and requires a key and model. Interactive handoff is outside
 sink process. See `references/peepshow-sinks.md`.
 
 ## Library use

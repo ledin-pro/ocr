@@ -16,11 +16,10 @@ opt-in engines.
 ## Install
 
 ```bash
-pip install pro-ledin-ocr             # baseline, including Camelot tables
+pip install pro-ledin-ocr             # baseline, Camelot tables, OpenAI-compatible vision
 pip install "pro-ledin-ocr[easyocr]" # EasyOCR
 pip install "pro-ledin-ocr[paddle]"  # PaddleOCR
 pip install "pro-ledin-ocr[paddle-vl]" # PaddleOCR-VL document parser client
-pip install "pro-ledin-ocr[vision]"  # automated OpenAI-compatible vision
 pip install "pro-ledin-ocr[all]"     # all optional Python engines/tools
 ```
 
@@ -125,7 +124,7 @@ peepshow video.mp4 \
 
 Named sink configuration uses `PEEPSHOW_SINK_OCR_*` variables, including
 `PEEPSHOW_SINK_OCR_AUTO_ESCALATE`. Automated `vision` works in sink mode with
-`pro-ledin-ocr[vision]`, key, and model. Interactive handoff does not run inside
+the base package's OpenAI client, key, and model. Interactive handoff does not run inside
 sink processes. See [`skills/ocr/references/peepshow-sinks.md`](skills/ocr/references/peepshow-sinks.md).
 
 ## Library

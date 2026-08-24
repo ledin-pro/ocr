@@ -1,0 +1,19 @@
+{
+  "source_dir": "../benchmark-input",
+  "run_root": "../benchmark-reports",
+  "targets": [
+    {
+      "kind": "omlx",
+      "model": "your-omlx-model",
+      "slug": "your-omlx-model"
+    },
+    {
+      "kind": "gpt",
+      "model": "your-openai-model",
+      "slug": "your-openai-model"
+    }
+  ],
+  "judge": {
+    "model": "your-judge-model"
+  }
+}

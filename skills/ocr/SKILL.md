@@ -209,6 +209,22 @@ ocr FILE1 FILE2 --cache ocr-cache.json --format txt --out results/
 ocr FILE --searchable-pdf searchable.pdf
 ```
 
+## OCR Profile Benchmark
+
+Use `scripts/ocr-profile-benchmark.py` to compare temporary oMLX profiles with
+OpenAI compatible vision models. The benchmark calls `pro.ledin.ocr` directly and
+stores resumable reports under the configured `run_root`:
+
+```bash
+export OMLX_API_KEY=your-omlx-key
+export OPENAI_API_KEY=your-openai-key
+python scripts/ocr-profile-benchmark.py --config benchmark.json
+python scripts/ocr-profile-benchmark.py --resume path/to/run
+```
+
+See `references/benchmark.md` and
+`scripts/ocr-profile-benchmark.example.json` for configuration details.
+
 ## Output behavior
 
 | Flag | Output |

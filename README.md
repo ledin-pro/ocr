@@ -91,6 +91,32 @@ Handoff accepts `--pages`, `--dpi`, `--vision-prompt`, and
 
 See `ocr --help` for complete flag reference.
 
+## OCR Benchmark
+
+The profile benchmark compares temporary oMLX profiles with OpenAI compatible
+models using the OCR library directly. It has no HealthOS dependency. Start
+from [`scripts/ocr-profile-benchmark.example.json`](scripts/ocr-profile-benchmark.example.json),
+adjust `source_dir`, services, credentials, and `targets`, then run:
+
+```bash
+export OMLX_API_KEY=your-omlx-key
+export OPENAI_API_KEY=your-openai-key
+python scripts/ocr-profile-benchmark.py --config path/to/ocr-profile-benchmark.json
+```
+
+Each target writes OCR Markdown to its own report directory. The resolved
+configuration is stored in `run-config.json`, so interrupted runs can be
+resumed:
+
+```bash
+python scripts/ocr-profile-benchmark.py --resume path/to/run
+```
+
+The benchmark requires `pdftoppm`, `pdfseparate`, the installed `pro-ledin-ocr`
+package, and reachable oMLX/OpenAI compatible endpoints. See
+[`skills/ocr/references/benchmark.md`](skills/ocr/references/benchmark.md) for
+configuration and output details.
+
 ## Output formats
 
 `--format` accepts `md`, `txt`, `json`, comma-separated combinations, or `all`

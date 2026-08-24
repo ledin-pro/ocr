@@ -50,6 +50,7 @@ packages = ["src/pro"]
 [tool.hatch.build.targets.sdist]
 include = [
     "src/pro",
+    "scripts",
     "tests",
     "skills/ocr/references",
     "skills/ocr/SKILL.md",

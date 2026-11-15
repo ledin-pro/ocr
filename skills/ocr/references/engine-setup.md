@@ -136,6 +136,40 @@ Official/maintainer sources:
 - [oschwartz10612 Poppler Windows releases](https://github.com/oschwartz10612/poppler-windows/releases)
 - [WinGet package manifests](https://github.com/microsoft/winget-pkgs)
 
+## Apple Vision (macOS only)
+
+Use the owning isolated OCR environment's Python, not system Python. After
+platform detection and approval, install the optional extra:
+
+```bash
+python -m pip install "pro-ledin-ocr[apple-vision]"
+python -c "from pro.ledin import ocr; print(ocr.probe_engine_requirements('apple-vision').to_dict())"
+python -c "import objc, Vision, Foundation, Quartz; print('PyObjC imports OK')"
+```
+
+The extra declares macOS-only `pyobjc-framework-Vision>=10` and
+`pyobjc-framework-Quartz>=10`; transitive PyObjC dependencies provide Foundation
+and `objc`. Installation downloads Python bindings/dependencies. Recognition
+uses the system Vision framework locally, with no adapter model download or API
+credentials. Package/OS/Python compatibility must be checked on the actual host;
+these commands are not evidence of a tested version matrix. If the installed
+release lacks the engine/extra, obtain separate approval to update that isolated
+CLI from the reviewed source before verification.
+
+The public probe checks platform first, then module specs for `Vision`,
+`Foundation`, `Quartz`, and `objc`, without importing them, recognizing images,
+network access, model downloads, credential lookup, or mutation. It reports
+`unsupported_apple_vision_platform` off macOS or
+`missing_apple_vision_packages` with all absent modules. All listed modules are
+required (`components_relation="all"`). An installed but unloadable binding
+raises `OcrRequirementError` with `apple_vision_import_failed` at runtime;
+recognition errors remain fatal. Neither case falls back to another engine.
+
+After imports succeed, rerun the approved failed command, for example
+`ocr photo.jpg --engine apple-vision --lang rus+eng --format md,json --out results/`.
+Follow the validation limits in `engines.md`; a successful spec probe/import
+alone does not establish working recognition.
+
 ## EasyOCR
 
 Install package extra after platform checks:

@@ -12,6 +12,7 @@ is Python module `python -m pro.ledin.ocr.vision_handoff`, not sink engine.
 | Engine | Requirement |
 |---|---|
 | `tesseract` | Tesseract binary and requested language data |
+| `apple-vision` | macOS, `pro-ledin-ocr[apple-vision]`; local accurate line OCR (see `engines.md`) |
 | `easyocr` | `pro-ledin-ocr[easyocr]` and downloaded models |
 | `paddleocr` | `pro-ledin-ocr[paddle]`, matching PaddlePaddle runtime, models |
 | `paddleocr-vl-mlx` | `pro-ledin-ocr[paddle-vl]`, loopback MLX-VLM service, model ID |

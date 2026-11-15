@@ -235,6 +235,12 @@ class TextPdfTables(unittest.TestCase):
             path = os.path.join(tmp, "table.pdf")
             self._write_ruled_pdf(path)
             pages = ocr.recognize(path, ocr.RecognizeOptions())
+            # Native extraction precedes local engine requirements, including
+            # when the selected Apple bridge is unavailable on this platform.
+            apple_pages = ocr.recognize(path, ocr.RecognizeOptions(
+                engine="apple-vision", auto_escalate=("easyocr",)
+            ))
+            self.assertEqual(apple_pages, pages)
         self.assertEqual(len(pages), 1)
         self.assertIn("ALT", pages[0]["text"])
         self.assertEqual(len(pages[0]["tables"]), 1)

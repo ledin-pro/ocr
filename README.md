@@ -5,8 +5,8 @@
 Layered extraction for text PDFs, scanned PDFs, and images
 (PNG/JPG/TIFF/HEIC/WEBP). Readable PDF text layers are extracted directly and
 tables are reconstructed with Camelot. Scans use Poppler and Tesseract;
-EasyOCR, PaddleOCR, structured PaddleOCR-VL over MLX, and automated vision are
-opt-in engines.
+EasyOCR, PaddleOCR, structured PaddleOCR-VL over MLX, local Apple Vision on
+macOS, and automated OpenAI-compatible vision are opt-in engines.
 
 - Import name: `pro.ledin.ocr`
 - Console scripts: `ocr`, `peepshow-sink-ocr`
@@ -17,6 +17,7 @@ opt-in engines.
 
 ```bash
 pip install pro-ledin-ocr             # baseline, Camelot tables, OpenAI-compatible vision
+pip install "pro-ledin-ocr[apple-vision]" # macOS Vision via optional PyObjC bindings
 pip install "pro-ledin-ocr[easyocr]" # EasyOCR
 pip install "pro-ledin-ocr[paddle]"  # PaddleOCR
 pip install "pro-ledin-ocr[paddle-vl]" # PaddleOCR-VL document parser client
@@ -61,9 +62,33 @@ ocr table.pdf --engine paddleocr-vl-mlx \
 
 Engine resolution is explicit: `--engine` overrides `OCR_ENGINE`, otherwise
 `tesseract` is used. There is no `auto` engine. Valid engines are `tesseract`,
-`easyocr`, `paddleocr`, `paddleocr-vl-mlx`, and `vision`. The MLX engine runs
-full layout parsing inside `PaddleOCRVL`; its loopback service handles only the
+`easyocr`, `paddleocr`, `paddleocr-vl-mlx`, `apple-vision`, and `vision`. The MLX
+engine runs full layout parsing inside `PaddleOCRVL`; its loopback service handles only the
 VLM stage and must not receive document images directly.
+
+`apple-vision` explicitly uses local macOS Vision in `.accurate` mode through
+optional PyObjC bindings. Consider it for photos with Russian captions:
+
+```bash
+ocr photo.jpg --engine apple-vision --lang rus+eng --format md,json --out results/
+ocr scan.pdf --lang rus+eng --auto-escalate apple-vision --format md,json --out results/
+```
+
+It preserves native text-PDF extraction, uses existing rendering for scans, and
+can participate in strict escalation. Unsupported platform, missing/broken
+bindings, or recognition failures stop the run without another-engine fallback.
+`vision` still means the OpenAI-compatible API; `tesseract` remains default.
+Apple Vision JSON `words` entries are lines (`granularity="line"`), with
+confidence 0–100 and top-left pixel boxes `[left, top, width, height]` on the
+decoded recognition image after any preprocessing. It provides neither an
+orientation search nor table/layout reconstruction. Supported languages depend
+on the OS/request revision. Local recognition is verified on macOS 27.2 arm64,
+Python 3.14.3, and PyObjC 13.0, including photos and a two-page synthetic PDF.
+This does not establish universal accuracy, speed, or support for other version
+combinations; macOS 14 CI has not yet run. See
+[`engines.md`](skills/ocr/references/engines.md#local-apple-vision) for limits and
+[`engine-setup.md`](skills/ocr/references/engine-setup.md#apple-vision-macos-only)
+for approved isolated-environment setup and validation.
 
 For readable text PDFs, table extraction is a native pre-OCR stage rather than
 an OCR engine. It is enabled by default. Camelot `auto` is attempted first and
@@ -202,8 +227,9 @@ requirement = ocr.probe_pdf_requirements()
 when every listed component is required and `any` when installing one listed
 component is enough — PDF backends use `any` because Poppler or PyMuPDF
 satisfies them. Paddle preflight reports both `paddleocr` and `paddle` when both
-import modules are absent. EasyOCR, OpenAI, binary, and configuration failures
-use one-item tuples. Recognition raises `OcrRequirementError`, an `OcrError`
+import modules are absent. Apple Vision reports every absent PyObjC module
+among `Vision`, `Foundation`, `Quartz`, and `objc`. EasyOCR, OpenAI, binary,
+and configuration failures use one-item tuples. Recognition raises `OcrRequirementError`, an `OcrError`
 subclass, with same data under `.result` and direct attributes. Existing numeric
 `.code` remains CLI exit status;
 `.requirement_code`/`.stable_code` is stable requirement code. Current codes:
@@ -211,6 +237,8 @@ subclass, with same data under `.result` and direct attributes. Existing numeric
 `missing_easyocr_dependency`, `missing_paddleocr_package`,
 `missing_paddle_runtime`, `missing_openai_package`,
 `missing_vision_api_key`, `missing_vision_model`, `unsupported_engine`,
+`unsupported_apple_vision_platform`, `missing_apple_vision_packages`,
+`apple_vision_import_failed` (runtime import failure),
 `missing_pdf_render_backend`, and `missing_pdf_text_backend`.
 
 Probes stay cheap by checking module specs rather than importing. A module can
@@ -239,6 +267,7 @@ capability dump is a CLI diagnostic (`ocr -v`); library callers opt in with
 | Tier | Engine | Best for | Cost |
 |---|---|---|---|
 | 0 | Text layer + Camelot | Real text layers and native tables | Free, local |
+| Local opt-in | apple-vision | Photos with Russian captions on macOS; validate per document | Free, local |
 | 1 | tesseract (default) | Clean scans and typed text | Free |
 | 2 | easyocr | Handwriting and degraded scans | Free, heavy |
 | 2.5 | paddleocr | CJK, multilingual, angled text | Free, heavy |

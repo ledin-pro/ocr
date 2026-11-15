@@ -30,6 +30,10 @@ dependencies = ["camelot-py>=2,<3", "openai>=1.0"]
 pdf = ["pymupdf"]
 cv = ["opencv-python", "numpy"]
 pytesseract = ["pytesseract"]
+apple-vision = [
+    "pyobjc-framework-Vision>=10; sys_platform == 'darwin'",
+    "pyobjc-framework-Quartz>=10; sys_platform == 'darwin'",
+]
 easyocr = ["easyocr"]
 paddle = ["paddleocr>=3.7", "paddlepaddle>=3.2.1"]
 paddle-vl = ["paddleocr[doc-parser]>=3.7", "paddlepaddle>=3.2.1"]

@@ -25,3 +25,24 @@ jobs:
 
       - name: Run tests
         run: uv run --extra dev pytest -q
+
+  apple-vision-smoke:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      - name: Record runtime conditions
+        run: |
+          sw_vers
+          uname -m
+          uv --version
+
+      - name: Run real local Apple Vision smoke
+        env:
+          OCR_APPLE_VISION_SMOKE: "1"
+        run: uv run --extra dev --extra pdf --extra apple-vision pytest tests/test_apple_vision_smoke.py -v -s

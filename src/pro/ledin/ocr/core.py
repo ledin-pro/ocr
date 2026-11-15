@@ -350,6 +350,27 @@ def probe_engine_requirements(
     already created ``Caps``. Without it, executable and module-spec discovery
     is used; no engine package is imported and no model or network work occurs.
     """
+    if engine == "apple-vision":
+        if sys.platform != "darwin":
+            return RequirementResult(
+                engine, False, "unsupported_apple_vision_platform", "macOS",
+                "apple-vision", "platform",
+            )
+        missing = tuple(
+            module for module in ("Vision", "Foundation", "Quartz", "objc")
+            if not _capability(
+                caps, f"has_{module.lower()}",
+                lambda module=module: _module_available(module),
+            )
+        )
+        if missing:
+            return RequirementResult(
+                engine, False, "missing_apple_vision_packages",
+                ocr_extra="apple-vision", component_type="python-package",
+                missing_components=missing,
+            )
+        return RequirementResult(engine, True, "ok")
+
     if engine == "tesseract":
         if not _capability(
             caps, "bin_tesseract", lambda: shutil.which("tesseract") is not None
@@ -544,6 +565,8 @@ def probe_pdf_requirements(caps: Any | None = None) -> RequirementResult:
 
 
 def _requirement_exit_code(result: RequirementResult) -> int:
+    if result.component_type == "platform":
+        return EXIT_UNSUPPORTED
     if result.component_type in {"configuration", "engine"}:
         return EXIT_BAD_ARGS
     return EXIT_MISSING_BINARY
@@ -552,6 +575,13 @@ def _requirement_exit_code(result: RequirementResult) -> int:
 def _requirement_message(result: RequirementResult) -> str:
     component = result.missing_component or "unknown"
     components = result.missing_components or (component,)
+    if result.component_type == "platform":
+        return f"engine={result.engine} requires {component}."
+    if result.code == "apple_vision_import_failed":
+        return (
+            "Apple Vision bridge could not be imported. Repair package extra "
+            "'pro-ledin-ocr[apple-vision]'. " + ENGINE_SETUP_GUIDANCE
+        )
     if result.code == "unsupported_engine":
         return f"Unsupported OCR engine: {component}"
     if result.component_type == "configuration":
@@ -603,6 +633,10 @@ class Caps:
         self.has_numpy = _module_available("numpy")
         self.has_easyocr = _module_available("easyocr")
         self.has_openai = _module_available("openai")
+        self.has_vision = _module_available("Vision")
+        self.has_foundation = _module_available("Foundation")
+        self.has_quartz = _module_available("Quartz")
+        self.has_objc = _module_available("objc")
         self.has_pil = _module_available("PIL")            # Pillow
         self.has_paddleocr = _module_available("paddleocr")
         self.has_paddle = _module_available("paddle")
@@ -1842,6 +1876,96 @@ def _ocr_tesseract_cli(img_path: str, lang: str, psm: int,
     return full_text, mean_conf, words
 
 
+def ocr_apple_vision(img_path: str, lang: str, caps: Caps) -> tuple[str, float, list[dict]]:
+    """Local accurate OCR. Entries in the legacy `words` field are whole lines.
+
+    Geometry refers to the decoded input pixels, with a top-left origin, not
+    EXIF display coordinates. No orientation search or word-box inference runs.
+    """
+    _raise_requirement(probe_engine_requirements("apple-vision", caps=caps))
+    failed_import = RequirementResult(
+        "apple-vision", False, "apple_vision_import_failed", "PyObjC",
+        "apple-vision", "python-runtime",
+    )
+    try:
+        import objc
+        import Vision
+        import Quartz
+        from Foundation import NSDictionary, NSURL
+    except Exception as exc:
+        # Broken framework loaders may raise RuntimeError, not ImportError.
+        raise OcrRequirementError(failed_import) from exc
+
+    try:
+        with objc.autorelease_pool():
+            request = Vision.VNRecognizeTextRequest.alloc().init()
+            request.setRecognitionLevel_(Vision.VNRequestTextRecognitionLevelAccurate)
+            if lang == "auto":
+                if not hasattr(request, "setAutomaticallyDetectsLanguage_"):
+                    _fatal("apple-vision --lang auto requires macOS 13 or newer; select an explicit language.")
+                request.setAutomaticallyDetectsLanguage_(True)
+            else:
+                # Keep the CLI's Tesseract-style language vocabulary, while
+                # also accepting exact Vision language identifiers. Support is
+                # checked against this OS/request revision, never assumed.
+                aliases = {
+                    "eng": "en-US", "rus": "ru-RU", "fra": "fr-FR",
+                    "deu": "de-DE", "spa": "es-ES", "ita": "it-IT",
+                    "por": "pt-BR", "chi_sim": "zh-Hans", "chi_tra": "zh-Hant",
+                    "jpn": "ja-JP", "kor": "ko-KR", "ukr": "uk-UA",
+                    "vie": "vi-VN", "tha": "th-TH", "ara": "ar-SA",
+                    "hin": "hi-IN",
+                }
+                languages = [aliases.get(code, code) for code in lang.split("+")]
+                supported, error = request.supportedRecognitionLanguagesAndReturnError_(None)
+                if error:
+                    _fatal(f"Apple Vision language query failed: {error}")
+                unsupported = [code for code in languages if code not in supported]
+                if unsupported:
+                    _fatal(f"Unsupported apple-vision language(s): {', '.join(unsupported)}")
+                request.setRecognitionLanguages_(languages)
+            url = NSURL.fileURLWithPath_(os.path.abspath(img_path))
+            source = Quartz.CGImageSourceCreateWithURL(url, None)
+            image = Quartz.CGImageSourceCreateImageAtIndex(source, 0, None) if source else None
+            if image is None:
+                _fatal(f"Apple Vision could not decode image: {img_path}")
+            width = Quartz.CGImageGetWidth(image)
+            height = Quartz.CGImageGetHeight(image)
+            # Use a native dictionary: on PyObjC 13/Python 3.14, Vision's
+            # optional-key lookup on a proxied Python dict raises instead of
+            # returning nil (NSInvalidArgumentException: key does not exist).
+            handler = Vision.VNImageRequestHandler.alloc().initWithCGImage_options_(
+                image, NSDictionary.dictionary()
+            )
+            success, error = handler.performRequests_error_([request], None)
+            if not success or error:
+                _fatal(f"Apple Vision recognition failed: {error}")
+            lines = []
+            for observation in request.results() or []:
+                candidates = observation.topCandidates_(1)
+                if not candidates:
+                    continue
+                candidate = candidates[0]
+                rect = observation.boundingBox()
+                left = max(0, min(width, round(rect.origin.x * width)))
+                top = max(0, min(height, round((1 - rect.origin.y - rect.size.height) * height)))
+                right = max(left, min(width, round((rect.origin.x + rect.size.width) * width)))
+                bottom = max(top, min(height, round((1 - rect.origin.y) * height)))
+                lines.append({
+                    "text": str(candidate.string()),
+                    "conf": max(0.0, min(100.0, float(candidate.confidence()) * 100)),
+                    "bbox": [left, top, right - left, bottom - top],
+                    "granularity": "line",
+                })
+            text = "\n".join(line["text"] for line in lines)
+            confidence = sum(line["conf"] for line in lines) / len(lines) if lines else 0.0
+            return text, confidence, lines
+    except OcrError:
+        raise
+    except Exception as exc:
+        raise OcrError(f"Apple Vision recognition failed: {exc}") from exc
+
+
 def ocr_easyocr(img_path: str, caps: Caps, verbose: bool = False) -> tuple[str, float, list[dict]]:
     _raise_requirement(probe_engine_requirements("easyocr", caps=caps))
     with _engine_import(_easyocr_import_requirement):
@@ -2481,6 +2605,15 @@ def _process_file_once(
             "skip_reason": "input requires OCR and --skip-ocr is enabled",
         } for page_number in selected_pages]
 
+    # Validate the explicitly selected local engine even before a cache hit,
+    # but preserve the native text-PDF and --skip-ocr paths above/below.
+    if options.engine == "apple-vision" and (
+        input_type == "image" or (probe and probe["needs_ocr"])
+    ):
+        _require_engine("apple-vision", caps, options)
+        if options.psm != DEFAULT_PSM:
+            _fatal("apple-vision does not support a custom --psm setting.")
+
     # Cache key
     page_selection = (
         ",".join(str(page) for page in page_range)
@@ -2619,6 +2752,24 @@ def _process_file_once(
         pages_data.append({"n": 0, "source": "vision", "mean_conf": None,
                             "flag": None, "text": combined_md,
                             "markdown": combined_md, "issues": [], "words": []})
+        return _cache_and_return(cache, cache_key, pages_data, probe)
+
+    # Local Apple Vision path (explicit opt-in, no API fallback).
+    if options.engine == "apple-vision":
+        rendered = (
+            render_pages(path, dpi, page_range, tmpdir, caps, verbose)
+            if input_type == "pdf" else [(1, path)]
+        )
+        for pnum, img_path in rendered:
+            pp_path = preprocess(img_path, pp_level, caps, tmpdir, verbose)
+            text, conf, lines = ocr_apple_vision(pp_path, options.lang, caps)
+            cleaned = general_cleanup(text) if not options.no_cleanup else text
+            issues = quality_issues(conf, lines, options.min_conf)
+            pages_data.append({
+                "n": pnum, "source": "apple-vision", "mean_conf": round(conf, 1),
+                "flag": "review-vision" if issues else None,
+                "text": cleaned, "issues": issues, "words": lines,
+            })
         return _cache_and_return(cache, cache_key, pages_data, probe)
 
     # EasyOCR path

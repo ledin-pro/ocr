@@ -37,7 +37,7 @@ from .core import (
 
 caps_global: Caps  # set in main()
 OUTPUT_FORMATS = ("md", "txt", "json")
-OCR_ENGINES = ("tesseract", "easyocr", "paddleocr", "paddleocr-vl-mlx", "vision")
+OCR_ENGINES = ("tesseract", "easyocr", "paddleocr", "paddleocr-vl-mlx", "apple-vision", "vision")
 
 
 def parse_formats(value: str) -> list[str]:

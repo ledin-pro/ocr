@@ -5,6 +5,7 @@
 | Tier | Engine | Best use | Languages | Requirement |
 |---|---|---|---|---|
 | 0 | Text layer + Camelot | Readable text PDF and native tables | Embedded text | Poppler/PyMuPDF plus bundled Camelot |
+| Local opt-in | `apple-vision` | Photos with Russian captions on macOS; validate per document | OS/request-dependent | `pro-ledin-ocr[apple-vision]`, system Vision |
 | 1 | `tesseract` | Clean scans, typed text | 160+ with language data | Tesseract binary |
 | 2 | `easyocr` | Handwriting, degraded scans | 80+ | `pro-ledin-ocr[easyocr]`, models |
 | 2.5 | `paddleocr` | CJK, multilingual, angled text | 100+ | `pro-ledin-ocr[paddle]`, PaddlePaddle, models |
@@ -13,8 +14,66 @@
 | Handoff | `python -m pro.ledin.ocr.vision_handoff` | Current multimodal agent reads selected pages | Model-dependent | Image-capable agent |
 
 Engine resolution: `--engine` > `OCR_ENGINE` > `tesseract`. Valid values are
-`tesseract`, `easyocr`, `paddleocr`, `paddleocr-vl-mlx`, and `vision`. There is no `auto` value.
+`tesseract`, `easyocr`, `paddleocr`, `paddleocr-vl-mlx`, `apple-vision`, and
+`vision`. There is no `auto` value.
 Automated OpenAI-compatible extraction uses `vision`; former alias is removed.
+
+## Local Apple Vision
+
+`apple-vision` explicitly selects macOS Vision through PyObjC, with recognition
+level `.accurate` (no fast mode). It is a local option for photos with Russian
+captions, not a replacement for the default `tesseract` or the OpenAI-compatible
+API engine `vision`.
+
+```bash
+ocr photo.jpg --engine apple-vision --lang rus+eng --format md,json --out results/
+ocr scan.pdf --engine apple-vision --lang rus+eng --format md,json --out results/
+ocr scan.pdf --lang rus+eng --auto-escalate apple-vision --format md,json --out results/
+```
+
+`rus+eng` maps to `ru-RU` and `en-US`. Explicit language identifiers are checked
+against the current OS/request revision; unsupported languages fail explicitly.
+`--lang auto` uses Vision language detection where available (macOS 13+), not
+Tesseract OSD. Custom `--psm` settings are unsupported.
+
+Scanned PDFs use existing page rendering and preprocessing; readable text PDFs
+keep native extraction and Camelot. JSON `words` contains whole-line observations
+with `granularity="line"`, not inferred word boxes. Confidence is scaled to
+0–100; `bbox=[left, top, width, height]` is in pixels with a top-left origin on
+the decoded image passed to recognition (after rendering/preprocessing), not
+necessarily the original photo or EXIF display coordinates.
+
+There is no orientation search or automatic best-rotation selection, and no
+Apple Vision table/layout reconstruction. Inspect source orientation and line
+content rather than choosing a rotation by character count.
+
+Apple Vision can be baseline or a strict escalation candidate. All requested
+requirements are preflighted; platform, dependency, or attempt failures stop the
+workflow without substitution or hidden API upload. Local candidates follow the
+same selection rules described below.
+
+### Verified local results
+
+Verified on macOS 27.2 arm64, Python 3.14.3, and PyObjC 13.0 using the installed
+CLI from the reviewed local repository with extra `apple-vision`; system Python
+was unchanged. CLI checks used `--lang rus+eng --preprocess none` and JSON output:
+
+| Input | Mean confidence | Content check | Elapsed |
+|---|---|---|---|
+| Local photo A | 75.8 | 3/4 expected labels | 7.600 s |
+| Local photo B | 75.7 | 4/4 expected labels | 0.521 s |
+| Synthetic two-page PDF | 100.0 on each page | All expected lines/numbers | 0.798 s |
+
+Pixel bounds were valid. Photo sources and recognized content remain outside
+the repository/CI and were not sent to external APIs. The missed label is a
+real limitation, not a successful full transcription. The local suite passed
+232 tests without skips, including real image, automatic-language, and PDF
+smoke checks. macOS 14 CI has not yet run.
+
+These measurements cover this host and these inputs only, not a compatibility
+or performance matrix. Record versions, material lines, confidence, box bounds,
+and timings for other hosts/documents; do not infer cold-start causes or promise
+better accuracy/speed on untested documents.
 
 ## Native Camelot table stage
 
@@ -50,6 +109,9 @@ same probe and raises `OcrRequirementError` for unavailable requirements.
 
 | Stable code | Missing component | Extra | Component type |
 |---|---|---|---|
+| `unsupported_apple_vision_platform` | `macOS` | `apple-vision` | `platform` |
+| `missing_apple_vision_packages` | absent `Vision`, `Foundation`, `Quartz`, `objc` modules | `apple-vision` | `python-package` |
+| `apple_vision_import_failed` | `PyObjC` | `apple-vision` | `python-runtime` |
 | `missing_tesseract_binary` | `tesseract` | none | `binary` |
 | `missing_easyocr_package` | `easyocr` | `easyocr` | `python-package` |
 | `missing_easyocr_dependency` | detected transitive module | `easyocr` | `python-package` |
@@ -117,8 +179,10 @@ If both Paddle modules are absent, result keeps code
 `paddleocr`, and reports `("paddleocr", "paddle")` in plural field. If only
 runtime is absent, result reports one-item tuple `("paddle",)`; PaddlePaddle is
 the distribution providing that import module.
-Other current failures expose one-item tuples; successful result exposes empty
-tuple.
+Apple Vision similarly reports every absent PyObjC module in one result.
+Single-component failures expose one-item tuples; successful results expose an
+empty tuple. `apple_vision_import_failed` is a runtime import error, not a
+side-effect-free probe result.
 
 ## Strict auto-escalation
 

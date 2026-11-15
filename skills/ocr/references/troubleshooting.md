@@ -129,10 +129,25 @@ rerun of reported pages.
 
 ## Engine value rejected
 
-Valid engine values: `tesseract`, `easyocr`, `paddleocr`, `vision`.
+Valid engine values: `tesseract`, `easyocr`, `paddleocr`, `paddleocr-vl-mlx`,
+`apple-vision`, `vision`.
 
 Resolution is `--engine` > `OCR_ENGINE` > `tesseract`. `auto` and old automated
 vision engine name are invalid.
+
+## Apple Vision fails or returns unexpected geometry
+
+Use `engine-setup.md` for the structured platform/PyObjC requirement errors.
+A passing module-spec probe does not prove that framework imports or recognition
+work. Report the exact runtime error and stop; keep the selected engine and
+strict escalation chain unchanged. A runtime failure is not a successful empty
+OCR result or proof of a missing package.
+
+For unsupported language errors, use an explicit supported language such as
+`--lang rus+eng` where the current OS/request supports it. `--psm` is a Tesseract
+control; custom values are rejected for Apple Vision. See `engines.md` for the
+line-level `words` contract, pixel coordinates, and orientation limits before
+interpreting boxes or comparing output.
 
 ## Automated vision configuration error
 

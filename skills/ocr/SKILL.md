@@ -63,7 +63,12 @@ text layer is rejected, or native extraction cannot access the visual structure.
 ## Engine and escalation resolution
 
 - Baseline engine: `--engine` > `OCR_ENGINE` > `tesseract`.
-- Valid engines: `tesseract`, `easyocr`, `paddleocr`, `paddleocr-vl-mlx`, `vision`.
+- Valid engines: `tesseract`, `easyocr`, `paddleocr`, `paddleocr-vl-mlx`,
+  `apple-vision`, `vision`.
+- `apple-vision` is local macOS OCR through optional PyObjC bindings in
+  `pro-ledin-ocr[apple-vision]`, using `.accurate` recognition. Consider it for
+  photos with Russian captions; this is not a claim of universal superiority.
+  See `references/engines.md` for language, geometry, and validation limits.
 - No `auto` engine exists.
 - Automated OpenAI-compatible vision engine is `vision`; former alias is
   removed.
@@ -103,8 +108,9 @@ Result fields: `engine`, `available`, stable `code`, backward-compatible
 `ocr_extra`, `component_type`, optional `first_run_note`. Singular value is first
 tuple item. `components_relation` is `all` for required sets and `any` when one
 listed component suffices, as for PDF backends. Paddle probe reports `paddleocr`
-and `paddle` together when both modules are missing; other engine failures use
-one-item tuples. Recognition uses same probe and raises
+and `paddle` together when both modules are missing. Apple Vision likewise
+reports every absent PyObjC module; single-component failures use one-item tuples.
+Recognition uses same probe and raises
 `ocr.OcrRequirementError` on failure. Error retains numeric `.code` for CLI
 compatibility and exposes stable code as `.requirement_code` or `.stable_code`.
 Probe performs no engine import, model download, network call, credential
@@ -145,13 +151,17 @@ Optional helper failures are fallback conditions, not fatal requirements:
    failed OCR command. If verification fails, stop and report exact failure.
 
 Do not downgrade to Tesseract when user explicitly requested EasyOCR,
-PaddleOCR, PaddleOCR-VL, or vision. Do not remove an escalation engine to make run pass.
+PaddleOCR, PaddleOCR-VL, Apple Vision, or vision. Do not remove an escalation
+engine to make run pass.
 
 ## Targeted approved reruns
 
 Use only when no auto-escalation chain was configured:
 
 ```bash
+# Local macOS photos with Russian captions (explicit opt-in)
+ocr FILE --engine apple-vision --lang rus+eng --pages 2,5 --format md,json
+
 # Flagged handwriting/degraded pages
 ocr FILE --engine easyocr --pages 2,5 --format md
 
